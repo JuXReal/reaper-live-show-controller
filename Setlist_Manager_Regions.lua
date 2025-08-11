@@ -2,7 +2,7 @@
 --  Setlist_Manager_Regions_ImGui_Styled.lua  (SAFE MODE + REMOTE)
 --  Setlist-Manager für REAPER-Regions mit hübscher GUI,
 --  Light/Dark, Fullscreen, Hilfe, UI-Scale, A/B-Datei-Sync
---  Version: 1.6-safe + name-fallback
+--  Version: 1.6.1-safe (About unter Help)
 -- ============================================================
 
 
@@ -16,7 +16,7 @@ if not reaper or not reaper.ImGui_CreateContext then
 end
 
 local APP = "Setlist Manager (Regions) – Styled"
-local VER = "1.6-safe"
+local VER = "1.6.1-safe"
 local DIR_SET = reaper.GetResourcePath() .. "/Setlists"
 local PATH_STATUS = reaper.GetResourcePath() .. "/Setlists/status.json"
 local WRITE_IVL, POLL_IVL = 0.12, 0.12
@@ -25,6 +25,9 @@ local UI_SCALE = 1.20
 
 -- Safe Mode: nur Default-Font, keine StyleColor-Pushes
 local USE_ONLY_DEFAULT_FONT = true
+
+-- *** Neues Setting: Start-Warnung anzeigen? ***
+local SHOW_WARNING = true
 
 local ctx = reaper.ImGui_CreateContext(APP)
 local FONT_UI, FONT_BIG, FONT_HUGE  -- bleiben im Safe Mode nil
@@ -43,6 +46,11 @@ local selected_set_file = 1
 
 local show_help_quick = false
 local show_help_keys  = false
+local show_help_about = false   -- <<< NEU: About & Support Popup
+
+-- Popups/Info: Start-Haftungshinweis (Footer ist entfernt)
+local show_warning_pending = SHOW_WARNING
+local show_info_footer = false  -- <<< Kein Footer mehr
 
 -- Remote/MIDI via ExtState
 local REMOTE_KEY = "SetlistMgrRemote"
@@ -543,10 +551,29 @@ end
 
 
 -- ============================================================
--- KAPITEL 8 — HILFE-POPUPS
+-- KAPITEL 8 — HILFE- & INFO-POPUPS (inkl. ABOUT)
 -- ============================================================
 
 local function draw_help_popups()
+  -- *** Start-Warnung (Haftungsausschluss) ***
+  if show_warning_pending then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(560*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "Live Show Warning")
+    show_warning_pending = false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "Live Show Warning", true) then
+    reaper.ImGui_TextWrapped(ctx,
+      "Haftungsausschluss:\n\n" ..
+      "Dieses Script wird ohne Gewähr bereitgestellt. " ..
+      "Die Nutzung in Live-Situationen erfolgt ausdrücklich auf eigene Gefahr. " ..
+      "Bitte vor dem Einsatz live ausführlich testen, um unerwartetes Verhalten zu vermeiden.")
+    reaper.ImGui_Separator(ctx)
+    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
+
   -- Quick Start
   if show_help_quick then
     local w,h = display_size()
@@ -579,15 +606,60 @@ local function draw_help_popups()
     if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
     reaper.ImGui_EndPopup(ctx)
   end
+
+  -- <<< NEU: About & Support-Popup >>>
+  if show_help_about then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(640*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "About & Support"); show_help_about=false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "About & Support", true) then
+    reaper.ImGui_TextWrapped(ctx, "Setlist Manager (Regions) – Styled")
+    reaper.ImGui_Text(ctx, "Version: "..VER)
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_TextWrapped(ctx, "By Sascha Flach")
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_TextWrapped(ctx, "Support my Work:")
+    reaper.ImGui_TextWrapped(ctx, "  Patreon: https://www.patreon.com/profile/creators?u=108528455")
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_TextWrapped(ctx, "Follow my Band:")
+    reaper.ImGui_TextWrapped(ctx, "  Instagram: https://www.instagram.com/neonyzerband/")
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_TextWrapped(ctx, "Hinweis: Links können aus diesem Fenster kopiert werden (STRG+C).")
+    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
 end
+
+-- (ENTFÄLLT) *** Info-Footer ***
+-- Der Footer mit About/Support ist entfernt, damit nichts im Show-Panel „drunterhängt“.
 
 
 
 -- ============================================================
--- KAPITEL 9 — HOTKEYS (IM FRAME)
+-- KAPITEL 9 — HOTKEYS (IM FRAME)  — FIX: block while typing
 -- ============================================================
 
 local function hotkeys_in_frame()
+  -- Wenn irgendein Eingabeelement aktiv ist ODER ImGui Keyboard-Capture will,
+  -- dann KEINE Shortcuts verarbeiten (sonst stören sie beim Tippen).
+  local io = reaper.ImGui_GetIO and reaper.ImGui_GetIO(ctx) or {}
+  local wantKeyboard = (io and (io.WantCaptureKeyboard or io.WantTextInput)) and true or false
+  local anyItemActive = reaper.ImGui_IsAnyItemActive and reaper.ImGui_IsAnyItemActive(ctx) or false
+
+  -- Optional (robuster): Nur reagieren, wenn unser Fenster fokussiert ist
+  local windowFocused = true
+  if reaper.ImGui_IsWindowFocused then
+    local flags = reaper.ImGui_FocusedFlags_RootAndChildWindows and reaper.ImGui_FocusedFlags_RootAndChildWindows() or 0
+    windowFocused = reaper.ImGui_IsWindowFocused(ctx, flags)
+  end
+
+  if wantKeyboard or anyItemActive or not windowFocused then
+    return
+  end
+
+  -- Shortcuts nur noch, wenn NICHT getippt wird
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Space()) then
     if is_playing then stop_play() else play_entry(setlist.entries[current]) end
   end
@@ -599,6 +671,7 @@ local function hotkeys_in_frame()
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_1()) then role="LEADER" end
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_2()) then role="FOLLOWER" end
 end
+
 
 
 
@@ -654,7 +727,7 @@ local function main()
           rebuild_fonts()
         end
 
-        -- Repair-Button
+        -- Repair-Button: mappt fehlende IDs anhand gespeicherter Namen
         if reaper.ImGui_Button(ctx, "Repair missing entries by name") then
           scan_regions()
           for _, e in ipairs(setlist.entries) do
@@ -670,6 +743,11 @@ local function main()
       if reaper.ImGui_BeginMenu(ctx, "Help") then
         if reaper.ImGui_MenuItem(ctx, "Quick Start") then show_help_quick = true end
         if reaper.ImGui_MenuItem(ctx, "Shortcuts")  then show_help_keys  = true end
+        if reaper.ImGui_MenuItem(ctx, "About & Support") then show_help_about = true end -- <<< NEU
+        if reaper.ImGui_MenuItem(ctx, "Show disclaimer now") then
+          -- manuell jederzeit öffnen
+          show_warning_pending = true
+        end
         reaper.ImGui_EndMenu(ctx)
       end
       reaper.ImGui_EndMenuBar(ctx)
@@ -680,6 +758,8 @@ local function main()
     if mode=="EDIT" then panel_edit() else panel_show() end
     draw_help_popups()
     hotkeys_in_frame()
+
+    -- (Kein Info-Footer mehr)
 
     reaper.ImGui_End(ctx)
   end

@@ -2,7 +2,7 @@
 --  Setlist_Manager_Regions_ImGui_Styled.lua  (SAFE MODE + REMOTE)
 --  Setlist-Manager für REAPER-Regions mit hübscher GUI,
 --  Light/Dark, Fullscreen, Hilfe, UI-Scale, A/B-Datei-Sync
---  Version: 1.6.1-safe (About unter Help)
+--  Version: 1.7-safe (About unter Help, Hotkey-Fix, Sync-Diagnostics)
 -- ============================================================
 
 
@@ -16,7 +16,7 @@ if not reaper or not reaper.ImGui_CreateContext then
 end
 
 local APP = "Setlist Manager (Regions) – Styled"
-local VER = "1.6.1-safe"
+local VER = "1.7-safe"
 local DIR_SET = reaper.GetResourcePath() .. "/Setlists"
 local PATH_STATUS = reaper.GetResourcePath() .. "/Setlists/status.json"
 local WRITE_IVL, POLL_IVL = 0.12, 0.12
@@ -46,14 +46,20 @@ local selected_set_file = 1
 
 local show_help_quick = false
 local show_help_keys  = false
-local show_help_about = false   -- <<< NEU: About & Support Popup
+local show_help_about = false   -- About & Support Popup
+local show_help_diag  = false   -- Diagnostics Popup
 
 -- Popups/Info: Start-Haftungshinweis (Footer ist entfernt)
 local show_warning_pending = SHOW_WARNING
-local show_info_footer = false  -- <<< Kein Footer mehr
+local show_info_footer = false  -- Kein Footer mehr
 
 -- Remote/MIDI via ExtState
 local REMOTE_KEY = "SetlistMgrRemote"
+
+-- Sync/Netzwerk Diagnose
+local last_remote = nil              -- zuletzt empfangenes Leader-JSON (als Tabelle)
+local last_remote_received = 0       -- Zeitpunkt des letzten erfolgreichen Polls
+local last_read_ok = false           -- ob der letzte Poll das JSON erfolgreich geparst hat
 
 
 
@@ -191,9 +197,12 @@ local function status_build()
     role=role, set=setlist.name or "", index=current, total=#setlist.entries,
     playing=playing, paused=paused,
     region_name=r and r.name or "", region_idx=r and r.idx or -1,
-    status=(playing and "play") or (paused and "pause") or "stop"
+    status=(playing and "play") or (paused and "pause") or "stop",
+    ts=now(),                               -- Leader-Zeitstempel
+    playpos = reaper.GetPlayPosition() or 0 -- optionale Positionsinfo
   }
 end
+
 local function json_of(t)
   local function esc(s) return (s or ""):gsub('\\','\\\\'):gsub('"','\\"') end
   local parts={}
@@ -205,6 +214,7 @@ local function json_of(t)
   end
   return "{"..table.concat(parts,",").."}"
 end
+
 local function json_parse_flat(s)
   local t={}
   for k,v in s:gmatch('"(.-)"%s*:%s*([^,}]+)') do
@@ -214,20 +224,35 @@ local function json_parse_flat(s)
   end
   return t
 end
+
 local function status_write()
   if role~="LEADER" then return end
   local t=now(); if t-last_write<WRITE_IVL then return end; last_write=t
   writef(PATH_STATUS, json_of(status_build()))
 end
+
 local function status_poll()
   if role~="FOLLOWER" then return end
   local t=now(); if t-last_poll<POLL_IVL then return end; last_poll=t
-  local txt = readf(PATH_STATUS); if not txt then return end
-  local d = json_parse_flat(txt); if not d then return end
-  if d.index and d.index~=current then goto_i(math.max(1, math.min(#setlist.entries, d.index)), d.status=="play") end
+
+  local txt = readf(PATH_STATUS)
+  if not txt then last_read_ok=false; return end
+
+  local d = json_parse_flat(txt)
+  if not d then last_read_ok=false; return end
+
+  last_read_ok = true
+  last_remote = d
+  last_remote_received = t
+
+  -- Folge dem Leader
+  if d.index and d.index~=current then
+    goto_i(math.max(1, math.min(#setlist.entries, d.index)), d.status=="play")
+  end
   if d.status=="stop" and is_playing then stop_play() end
   if d.status=="play" and not is_playing then play_entry(setlist.entries[current]) end
 end
+
 local function engine()
   local e = setlist.entries[current]
   local playing = select(1, get_play_state())
@@ -310,6 +335,64 @@ end
 -- KAPITEL 7 — GUI: TOOLBAR, EDIT-PANEL, SHOW-PANEL
 -- ============================================================
 
+-- ---------- Sync-Status berechnen (Ampel) ----------
+local function compute_sync_state()
+  local state = {
+    color="gray", emoji="⚪", label="No data",
+    detail="Warte auf Leader...",
+    latency_ms=nil, file_age=nil, ok=false
+  }
+
+  if role == "LEADER" then
+    local age = now() - (last_write or 0)
+    state.file_age = age
+    state.ok = age < 1.0
+    if state.ok then
+      state.color="green"; state.emoji="🟢"; state.label="Leader broadcasting"
+      state.detail=string.format("Schreiben aktiv (%.0f ms)", (age*1000))
+    else
+      state.color="yellow"; state.emoji="🟡"; state.label="Leader idle"
+      state.detail="Noch kein aktueller Write-Zyklus (ok, wenn gerade nichts passiert)"
+    end
+    return state
+  end
+
+  -- Follower:
+  if not last_read_ok or not last_remote then
+    state.color="red"; state.emoji="🔴"; state.label="No signal"
+    state.detail = "Kann status.json nicht lesen oder parsen"
+    return state
+  end
+
+  local now_t = now()
+  local age = now_t - (last_remote.ts or last_remote_received or now_t)
+  state.file_age = age
+  local latency = (last_remote.ts and (now_t - last_remote.ts)) or nil
+  state.latency_ms = latency and (latency*1000) or nil
+
+  local index_match = (last_remote.index == current)
+  local status_match = ((last_remote.status=="play") == is_playing) or (last_remote.status=="stop" and not is_playing)
+
+  if index_match and status_match and age < 0.6 then
+    state.color="green"; state.emoji="🟢"; state.label="In Sync"; state.ok=true
+    state.detail=string.format("Index=%d ok, age=%.0f ms%s",
+      current, age*1000, latency and string.format(", ~lat=%.0f ms", state.latency_ms) or "")
+  elseif age < 2.0 then
+    state.color="yellow"; state.emoji="🟡"; state.label="Catching up"
+    local miss = {}
+    if not index_match then miss[#miss+1]="Index" end
+    if not status_match then miss[#miss+1]="Status" end
+    state.detail=string.format("Age=%.0f ms, Mismatch: %s%s",
+      age*1000, (#miss>0 and table.concat(miss,"+") or "klein"),
+      latency and string.format(", ~lat=%.0f ms", state.latency_ms) or "")
+  else
+    state.color="red"; state.emoji="🔴"; state.label="Stale/No signal"
+    state.detail=string.format("Zu alt (%.1fs). Prüfe Netzwerk/Pfad.", age)
+  end
+
+  return state
+end
+
 -- ---------- Toolbar ----------
 local function toolbar()
   if reaper.ImGui_BeginChild(ctx, "toolbar", 0, math.floor(42*UI_SCALE), 0) then
@@ -347,6 +430,27 @@ local function toolbar()
     end
     reaper.ImGui_SameLine(ctx)
     if reaper.ImGui_Button(ctx, "⏭ Next") then next_song(mode=="SHOW") end
+
+    -- --- Sync-Indicator rechts ---
+    if reaper.ImGui_GetContentRegionAvail then
+      local avail_w = select(1, reaper.ImGui_GetContentRegionAvail(ctx)) or 0
+      if avail_w > 60 then
+        reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
+      end
+    end
+    local st = compute_sync_state()
+    reaper.ImGui_Text(ctx, st.emoji.." "..st.label)
+    if reaper.ImGui_IsItemHovered(ctx) then
+      reaper.ImGui_BeginTooltip(ctx)
+      reaper.ImGui_TextWrapped(ctx, st.detail)
+      reaper.ImGui_TextWrapped(ctx, "Rolle: "..role)
+      reaper.ImGui_TextWrapped(ctx, "Pfad: "..(PATH_STATUS or "?"))
+      if role=="FOLLOWER" and last_remote then
+        reaper.ImGui_TextWrapped(ctx, string.format("Leader: set=%s, index=%s, status=%s",
+          tostring(last_remote.set or "?"), tostring(last_remote.index or "?"), tostring(last_remote.status or "?")))
+      end
+      reaper.ImGui_EndTooltip(ctx)
+    end
 
     reaper.ImGui_EndChild(ctx)
   end
@@ -551,7 +655,7 @@ end
 
 
 -- ============================================================
--- KAPITEL 8 — HILFE- & INFO-POPUPS (inkl. ABOUT)
+-- KAPITEL 8 — HILFE- & INFO-POPUPS (inkl. ABOUT & DIAGNOSTICS)
 -- ============================================================
 
 local function draw_help_popups()
@@ -607,7 +711,7 @@ local function draw_help_popups()
     reaper.ImGui_EndPopup(ctx)
   end
 
-  -- <<< NEU: About & Support-Popup >>>
+  -- About & Support
   if show_help_about then
     local w,h = display_size()
     reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
@@ -630,15 +734,39 @@ local function draw_help_popups()
     if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
     reaper.ImGui_EndPopup(ctx)
   end
-end
 
--- (ENTFÄLLT) *** Info-Footer ***
--- Der Footer mit About/Support ist entfernt, damit nichts im Show-Panel „drunterhängt“.
+  -- Diagnostics
+  if show_help_diag then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(640*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "Diagnostics"); show_help_diag=false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "Diagnostics", true) then
+    local st = compute_sync_state()
+    reaper.ImGui_TextWrapped(ctx, "Sync: "..st.label.."  "..st.emoji)
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_TextWrapped(ctx, st.detail)
+    reaper.ImGui_TextWrapped(ctx, "Role: "..role)
+    reaper.ImGui_TextWrapped(ctx, "Status path: "..(PATH_STATUS or "?"))
+    if role=="FOLLOWER" and last_remote then
+      reaper.ImGui_TextWrapped(ctx, string.format("Leader set: %s", tostring(last_remote.set or "?")))
+      reaper.ImGui_TextWrapped(ctx, string.format("Leader index/status: %s / %s",
+        tostring(last_remote.index or "?"), tostring(last_remote.status or "?")))
+      reaper.ImGui_TextWrapped(ctx, string.format("Leader ts: %s", tostring(last_remote.ts or "?")))
+      if st.latency_ms then reaper.ImGui_TextWrapped(ctx, string.format("Estimated latency: %.0f ms", st.latency_ms)) end
+    end
+    if st.file_age then reaper.ImGui_TextWrapped(ctx, string.format("File age: %.0f ms", st.file_age*1000)) end
+    reaper.ImGui_Separator(ctx)
+    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
+end
 
 
 
 -- ============================================================
--- KAPITEL 9 — HOTKEYS (IM FRAME)  — FIX: block while typing
+-- KAPITEL 9 — HOTKEYS (IM FRAME)  — block while typing
 -- ============================================================
 
 local function hotkeys_in_frame()
@@ -648,7 +776,7 @@ local function hotkeys_in_frame()
   local wantKeyboard = (io and (io.WantCaptureKeyboard or io.WantTextInput)) and true or false
   local anyItemActive = reaper.ImGui_IsAnyItemActive and reaper.ImGui_IsAnyItemActive(ctx) or false
 
-  -- Optional (robuster): Nur reagieren, wenn unser Fenster fokussiert ist
+  -- Optional: Nur reagieren, wenn unser Fenster fokussiert ist
   local windowFocused = true
   if reaper.ImGui_IsWindowFocused then
     local flags = reaper.ImGui_FocusedFlags_RootAndChildWindows and reaper.ImGui_FocusedFlags_RootAndChildWindows() or 0
@@ -671,7 +799,6 @@ local function hotkeys_in_frame()
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_1()) then role="LEADER" end
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_2()) then role="FOLLOWER" end
 end
-
 
 
 
@@ -743,9 +870,9 @@ local function main()
       if reaper.ImGui_BeginMenu(ctx, "Help") then
         if reaper.ImGui_MenuItem(ctx, "Quick Start") then show_help_quick = true end
         if reaper.ImGui_MenuItem(ctx, "Shortcuts")  then show_help_keys  = true end
-        if reaper.ImGui_MenuItem(ctx, "About & Support") then show_help_about = true end -- <<< NEU
+        if reaper.ImGui_MenuItem(ctx, "About & Support") then show_help_about = true end
+        if reaper.ImGui_MenuItem(ctx, "Diagnostics") then show_help_diag = true end
         if reaper.ImGui_MenuItem(ctx, "Show disclaimer now") then
-          -- manuell jederzeit öffnen
           show_warning_pending = true
         end
         reaper.ImGui_EndMenu(ctx)

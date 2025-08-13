@@ -1,10 +1,10 @@
 -- ============================================================
---  Setlist_Manager_Regions_ImGui_Styled.lua  (SAFE MODE + REMOTE)
---  Setlist-Manager für REAPER-Regions mit hübscher GUI,
+--  Setlist-Manager für REAPER-Regions
 --  Light/Dark, Fullscreen, Hilfe, UI-Scale, A/B-Datei-Sync
---  Version: 1.7-safe (About unter Help, Hotkey-Fix, Sync-Diagnostics)
+--  Version: 1.8
 -- ============================================================
 
+-- Known Bugs: Light mode doesen´t work
 
 -- ============================================================
 -- KAPITEL 1 — REQUIREMENTS, CONFIG & GLOBAL STATE
@@ -16,7 +16,7 @@ if not reaper or not reaper.ImGui_CreateContext then
 end
 
 local APP = "Setlist Manager (Regions) – Styled"
-local VER = "1.7-safe"
+local VER = "1.8-safe"
 local DIR_SET = reaper.GetResourcePath() .. "/Setlists"
 local PATH_STATUS = reaper.GetResourcePath() .. "/Setlists/status.json"
 local WRITE_IVL, POLL_IVL = 0.12, 0.12
@@ -83,6 +83,31 @@ local function SliderNumber(label, value, minv, maxv)
   else
     return reaper.ImGui_SliderFloat(ctx, label, value, minv, maxv, "%.2f")
   end
+end
+
+-- Duration-Utils
+local function region_duration_sec(r)
+  if not r then return 0 end
+  local d = (r.fin or 0) - (r.start or 0)
+  if d < 0 then d = 0 end
+  return d
+end
+
+local function entry_duration_sec(e)
+  if not e then return 0 end
+  local r = (e.region_idx and (function() for _,rr in ipairs(regions) do if rr.idx==e.region_idx then return rr end end end)()) or nil
+  r = r or ((e.name and (function()
+      for _,rr in ipairs(regions) do if rr.name==e.name then return rr end end
+    end)()) or nil)
+  return region_duration_sec(r)
+end
+
+local function setlist_total_minutes()
+  local sum = 0
+  for _, e in ipairs(setlist.entries) do
+    sum = sum + entry_duration_sec(e)
+  end
+  return (sum / 60.0), sum  -- minutes, seconds
 end
 
 
@@ -468,17 +493,22 @@ local function panel_edit()
     if reaper.ImGui_Button(ctx, "Reload") then scan_regions() end
     reaper.ImGui_Separator(ctx)
 
-    if reaper.ImGui_BeginTable(ctx, "tbl_regions", 3,
+    if reaper.ImGui_BeginTable(ctx, "tbl_regions", 4,
         reaper.ImGui_TableFlags_RowBg() | reaper.ImGui_TableFlags_Resizable()) then
       reaper.ImGui_TableSetupColumn(ctx, "Idx",  reaper.ImGui_TableColumnFlags_WidthFixed(), 40)
       reaper.ImGui_TableSetupColumn(ctx, "Name")
+      reaper.ImGui_TableSetupColumn(ctx, "Len (min)", reaper.ImGui_TableColumnFlags_WidthFixed(), 90) -- NEU
       reaper.ImGui_TableSetupColumn(ctx, "",     reaper.ImGui_TableColumnFlags_WidthFixed(), 80)
       reaper.ImGui_TableHeadersRow(ctx)
 
       for i, r in ipairs(regions) do
+        local dur_min = region_duration_sec(r) / 60.0
+
         reaper.ImGui_TableNextRow(ctx)
+
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, tostring(r.idx))
-        reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, r.name)
+        reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, r.name or "")
+        reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, string.format("%.1f", dur_min))
         reaper.ImGui_TableNextColumn(ctx)
         if reaper.ImGui_Button(ctx, "Add##"..i) then
           setlist.entries[#setlist.entries+1] = { region_idx = r.idx, continue = true, name = r.name }
@@ -520,6 +550,11 @@ local function panel_edit()
     reaper.ImGui_Text(ctx, " Name:")
     local changed, nm = reaper.ImGui_InputText(ctx, "##setname", setlist.name or "", 256)
     if changed then setlist.name = nm end
+
+    -- Netto-Playtime (Minuten)
+    local total_min = setlist_total_minutes()
+    reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
+    reaper.ImGui_Text(ctx, string.format("Net playtime: %.1f min", total_min))
 
     reaper.ImGui_Separator(ctx)
 
@@ -913,3 +948,4 @@ refresh_files()
 scan_regions()
 rebuild_fonts()
 reaper.defer(main)
+

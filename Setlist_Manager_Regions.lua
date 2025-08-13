@@ -1,12 +1,12 @@
 -- ============================================================
---  Setlist-Manager für REAPER-Regions
+--  Setlist_Manager_Regions_ImGui_Styled.lua  (SAFE MODE + REMOTE)
+--  Setlist-Manager für REAPER-Regions mit hübscher GUI,
 --  Light/Dark, Fullscreen, Hilfe, UI-Scale, A/B-Datei-Sync
---  Version: 1.8
+--  Version: 2.1 (Fix: Pfad-Persistenz & Windows-Root, Auto-Save)
 -- ============================================================
 
--- Known Bugs: Light mode doesen´t work
 
--- ============================================================
+--- ============================================================
 -- KAPITEL 1 — REQUIREMENTS, CONFIG & GLOBAL STATE
 -- ============================================================
 
@@ -16,9 +16,16 @@ if not reaper or not reaper.ImGui_CreateContext then
 end
 
 local APP = "Setlist Manager (Regions) – Styled"
-local VER = "1.8-safe"
-local DIR_SET = reaper.GetResourcePath() .. "/Setlists"
+local VER = "2.2"  -- ↑ Version angehoben
+
+-- Persistenz-Namespace für Settings
+local EXT_NS = "SetlistMgrStyled"
+
+-- Default-Verzeichnisse (werden nach load_settings ggf. überschrieben)
+local DIR_SET_DEFAULT = reaper.GetResourcePath() .. "/Setlists"
+local DIR_SET = DIR_SET_DEFAULT
 local PATH_STATUS = reaper.GetResourcePath() .. "/Setlists/status.json"
+
 local WRITE_IVL, POLL_IVL = 0.12, 0.12
 local TIME_EPS = 0.03
 local UI_SCALE = 1.20
@@ -26,14 +33,14 @@ local UI_SCALE = 1.20
 -- Safe Mode: nur Default-Font, keine StyleColor-Pushes
 local USE_ONLY_DEFAULT_FONT = true
 
--- *** Neues Setting: Start-Warnung anzeigen? ***
+-- *** Setting: Start-Warnung anzeigen? (persistiert) ***
 local SHOW_WARNING = true
 
 local ctx = reaper.ImGui_CreateContext(APP)
 local FONT_UI, FONT_BIG, FONT_HUGE  -- bleiben im Safe Mode nil
-local theme = "Dark"          -- "Dark" | "Light"
-local mode  = "EDIT"          -- "EDIT" | "SHOW"
-local role  = "LEADER"        -- "LEADER" | "FOLLOWER"
+local theme = "Dark"          -- "Dark" | "Light"  (persistiert)
+local mode  = "EDIT"          -- "EDIT" | "SHOW"   (Session, nicht persistiert)
+local role  = "LEADER"        -- "LEADER" | "FOLLOWER" (persistiert)
 local last_write, last_poll = 0, 0
 local is_playing, fullscreen = false, false
 local prev_mode = mode
@@ -49,7 +56,7 @@ local show_help_keys  = false
 local show_help_about = false   -- About & Support Popup
 local show_help_diag  = false   -- Diagnostics Popup
 
--- Popups/Info: Start-Haftungshinweis (Footer ist entfernt)
+-- Popups/Info: Start-Haftungshinweis
 local show_warning_pending = SHOW_WARNING
 local show_info_footer = false  -- Kein Footer mehr
 
@@ -57,11 +64,30 @@ local show_info_footer = false  -- Kein Footer mehr
 local REMOTE_KEY = "SetlistMgrRemote"
 
 -- Sync/Netzwerk Diagnose
-local last_remote = nil              -- zuletzt empfangenes Leader-JSON (als Tabelle)
-local last_remote_received = 0       -- Zeitpunkt des letzten erfolgreichen Polls
-local last_read_ok = false           -- ob der letzte Poll das JSON erfolgreich geparst hat
+local last_remote = nil
+local last_remote_received = 0
+local last_read_ok = false
 
+-- Settings-Persistenz (V2)
+local SETTINGS_KEY = "SETTINGS_V2"
+local settings_dirty = false
+local settings_last_save = 0
+local SETTINGS_SAVE_IVL = 0.5  -- mind. alle 0.5 s schreiben, wenn dirty
 
+-- ===== NEU: Edit-Buffer für Settings-Eingaben =====
+-- (Damit Eingaben nicht „zurückspringen“ und sauber übernommen werden können)
+local INPUT = {
+  status_path = "",   -- Bearbeitungspuffer für PATH_STATUS
+  dir_set     = "",   -- Bearbeitungspuffer für DIR_SET
+  set_name    = "",   -- Bearbeitungspuffer für Setlist-Namen im Settings-Menü
+}
+local settings_needs_apply = false  -- zeigt an, dass es ungespeicherte Änderungen gibt
+
+-- Kleiner Helfer: UI-Fokus von Tasten nicht „wegfressen“
+local function want_text_input()
+  local io = reaper.ImGui_GetIO and reaper.ImGui_GetIO(ctx) or {}
+  return (io and (io.WantCaptureKeyboard or io.WantTextInput)) and true or false
+end
 
 -- ============================================================
 -- KAPITEL 2 — HILFSFUNKTIONEN (I/O, UI, UTILS)
@@ -69,7 +95,12 @@ local last_read_ok = false           -- ob der letzte Poll das JSON erfolgreich 
 
 local function ensure_dir(p) reaper.RecursiveCreateDirectory(p, 0) end
 local function readf(p) local f=io.open(p,"rb") if not f then return nil end local c=f:read("*a") f:close() return c end
-local function writef(p,s) ensure_dir(DIR_SET) local f=io.open(p,"wb") if not f then return false end f:write(s) f:close() return true end
+local function writef(p,s)
+  -- Für Status-Datei: Ordner anlegen, falls nötig
+  local dir = p:match("^(.*)[/\\].-$")
+  if dir and dir ~= "" then ensure_dir(dir) end
+  local f=io.open(p,"wb") if not f then return false end f:write(s) f:close() return true
+end
 local function now() return reaper.time_precise() end
 local function get_play_state() local st=reaper.GetPlayState(); return (st&1)==1,(st&2)==2 end
 local function display_size()
@@ -107,9 +138,146 @@ local function setlist_total_minutes()
   for _, e in ipairs(setlist.entries) do
     sum = sum + entry_duration_sec(e)
   end
-  return (sum / 60.0), sum  -- minutes, seconds
+  return (sum / 60.0), sum
 end
 
+-- Pfad-Helpers (fix: Windows-Root wie "C:\" erhalten)
+local function normalize_path(p)
+  if not p or p=="" then return "" end
+  if p == "/" then return "/" end                         -- POSIX-Root beibehalten
+  if p:match("^%a:[/\\]$") then return p end             -- "C:\" oder "C:/" beibehalten
+  -- UNC-Pfade wie "\\server\share\" → ohne trailing Slash
+  if p:match("^[/\\][/\\][^/\\]+[/\\][^/\\]+[/\\]?$") then
+    return (p:gsub("[/\\]+$", ""))
+  end
+  return (p:gsub("[/\\]+$", ""))                          -- sonst: nur trailing Slashes entfernen
+end
+
+-- Mini-JSON (flat)
+local function json_of(t)
+  local function esc(s) return (s or ""):gsub('\\','\\\\'):gsub('"','\\"') end
+  local parts={}
+  for k,v in pairs(t) do
+    local vv = (type(v)=="string") and ('"'..esc(v)..'"')
+             or (type(v)=="boolean") and (v and "true" or "false")
+             or tostring(v)
+    parts[#parts+1] = '"'..k..'":'..vv
+  end
+  return "{"..table.concat(parts,",").."}"
+end
+
+local function json_parse_flat(s)
+  local t={}
+  if not s or s=="" then return t end
+  for k,v in s:gmatch('"(.-)"%s*:%s*([^,}]+)') do
+    v=v:gsub('^"%s*',''):gsub('%s*"$','')
+    if v=="true" then t[k]=true elseif v=="false" then t[k]=false
+    elseif v:match("^%-?%d+%.?%d*$") then t[k]=tonumber(v) else t[k]=v end
+  end
+  return t
+end
+
+-- ===== Settings-Persistenz V2 =====
+local function save_settings(force)
+  local t = {
+    theme = theme,
+    ui_scale = UI_SCALE,
+    dir_set = DIR_SET,
+    path_status = PATH_STATUS,
+    show_warning = SHOW_WARNING,
+    role = role,
+    use_only_default_font = USE_ONLY_DEFAULT_FONT,
+    ver = VER
+  }
+  local now_t = now()
+  if not force and (now_t - settings_last_save) < SETTINGS_SAVE_IVL and not settings_dirty then
+    return
+  end
+  reaper.SetExtState(EXT_NS, SETTINGS_KEY, json_of(t), true)
+  -- Rückwärtskompatibel: altes Feld (nur dir) weiterpflegen
+  reaper.SetExtState(EXT_NS, "SETLIST_DIR", DIR_SET or "", true)
+  settings_last_save = now_t
+  settings_dirty = false
+end
+
+local function load_settings()
+  local raw = reaper.GetExtState(EXT_NS, SETTINGS_KEY)
+  if raw and raw ~= "" then
+    local t = json_parse_flat(raw)
+    if t and next(t) ~= nil then
+      theme = (t.theme=="Light") and "Light" or "Dark"
+      UI_SCALE = tonumber(t.ui_scale or UI_SCALE) or UI_SCALE
+      DIR_SET = normalize_path(t.dir_set or DIR_SET_DEFAULT)
+      PATH_STATUS = t.path_status or PATH_STATUS
+      SHOW_WARNING = (t.show_warning ~= false)
+      role = (t.role=="FOLLOWER") and "FOLLOWER" or "LEADER"
+      USE_ONLY_DEFAULT_FONT = (t.use_only_default_font ~= false)
+    end
+  else
+    local dir = reaper.GetExtState(EXT_NS, "SETLIST_DIR")
+    if dir and dir ~= "" then DIR_SET = normalize_path(dir) else DIR_SET = DIR_SET_DEFAULT end
+  end
+  -- einmalig sichergehen, dass V2 geschrieben ist
+  settings_dirty = true
+  save_settings(true)
+
+  -- NEU: Edit-Buffer aus Settings initialisieren
+  INPUT.status_path = PATH_STATUS or ""
+  INPUT.dir_set     = DIR_SET or ""
+  INPUT.set_name    = setlist.name or "My Set"
+  settings_needs_apply = false
+end
+
+local function mark_settings_dirty() settings_dirty = true end
+
+-- Legacy-Helfer (beibehalten)
+local function save_prefs()
+  reaper.SetExtState(EXT_NS, "SETLIST_DIR", DIR_SET or "", true)
+  mark_settings_dirty()
+end
+
+-- ===== NEU: Datei-/Ordner-Dialoge (wenn JS-ReaScript-API vorhanden) =====
+local function has_js_api()
+  return reaper.JS_Dialog_BrowseForSaveFile ~= nil
+end
+
+-- Wähle eine Datei (z.B. status.json); gibt Pfad oder nil zurück
+local function browse_for_status_path()
+  local initial = INPUT.status_path ~= "" and INPUT.status_path or (reaper.GetResourcePath() .. "/Setlists/status.json")
+  local dir = initial:match("^(.*)[/\\].-$") or reaper.GetResourcePath()
+  local fn  = initial:match("^.*[/\\](.-)$") or "status.json"
+  if has_js_api() then
+    local ok, out = reaper.JS_Dialog_BrowseForSaveFile("Choose status.json", dir, fn, "JSON (*.json)\0*.json\0All files (*.*)\0*.*\0")
+    if ok and out and out ~= "" then
+      if not out:lower():match("%.json$") then out = out .. "/status.json" end
+      return out
+    end
+  else
+    local ok, out = reaper.GetUserFileNameForSave(dir.."/"..fn, "Choose status.json", ".json")
+    if ok and out and out ~= "" then return out end
+  end
+  return nil
+end
+
+-- Wähle ein Verzeichnis (Setlists-Ordner); gibt Pfad oder nil zurück
+local function browse_for_dir()
+  -- Es gibt keinen nativen Folder-Dialog in Standard-API; Workaround über File-Dialog:
+  local initial = (INPUT.dir_set ~= "" and INPUT.dir_set or (reaper.GetResourcePath().."/Setlists"))
+  local dir = initial
+  if has_js_api() then
+    local ok, out = reaper.JS_Dialog_BrowseForSaveFile("Choose Setlists folder", dir, "", "Folder\0*\0")
+    if ok and out and out ~= "" then
+      -- Wenn eine Datei gewählt wurde → Ordnerteil extrahieren
+      local only_dir = out:match("^(.*)[/\\].-$") or out
+      return normalize_path(only_dir)
+    end
+  else
+    -- Fallback: Text-Input
+    local ok, out = reaper.GetUserInputs("Setlists folder", 1, "Path:", initial)
+    if ok and out and out ~= "" then return normalize_path(out) end
+  end
+  return nil
+end
 
 
 -- ============================================================
@@ -135,7 +303,6 @@ local function R(id)
   end
 end
 
--- Fallback: Region per Name suchen
 local function R_by_name(name)
   if not name or name == "" then return nil end
   for _, r in ipairs(regions) do
@@ -165,7 +332,6 @@ local function save_set()
   setlist.name = nm
   local path = DIR_SET.."/"..nm:gsub("[^%w%-%._ ]","_")..".reaplaylist.txt"
   local t = {"# "..nm}
-  -- Abwärtskompatibel, aber mit optionalem Namen (3. Feld)
   for _,e in ipairs(setlist.entries) do
     local rr = R(e.region_idx) or R_by_name(e.name)
     local nm_safe = (e.name or (rr and rr.name) or ""):gsub("[\r\n]", " "):gsub(";", ",")
@@ -182,7 +348,6 @@ local function load_set_by_index(i)
   local entries = {}
   for line in txt:gmatch("[^\r\n]+") do
     if not line:match("^#") and line:find(";") then
-      -- 2- oder 3-spaltig: idx;cont[;name]
       local a,b,c = line:match("([^;]+);([^;]+);?(.*)")
       local ridx = tonumber(a or "")
       local cont = (b=="1" or b=="true")
@@ -197,7 +362,6 @@ local function delete_set_by_index(i)
   if i<1 or i>#files then return end
   os.remove(DIR_SET.."/"..files[i]); refresh_files()
 end
-
 
 
 -- ============================================================
@@ -223,31 +387,9 @@ local function status_build()
     playing=playing, paused=paused,
     region_name=r and r.name or "", region_idx=r and r.idx or -1,
     status=(playing and "play") or (paused and "pause") or "stop",
-    ts=now(),                               -- Leader-Zeitstempel
-    playpos = reaper.GetPlayPosition() or 0 -- optionale Positionsinfo
+    ts=now(),
+    playpos = reaper.GetPlayPosition() or 0
   }
-end
-
-local function json_of(t)
-  local function esc(s) return (s or ""):gsub('\\','\\\\'):gsub('"','\\"') end
-  local parts={}
-  for k,v in pairs(t) do
-    local vv = (type(v)=="string") and ('"'..esc(v)..'"')
-             or (type(v)=="boolean") and (v and "true" or "false")
-             or tostring(v)
-    parts[#parts+1] = '"'..k..'":'..vv
-  end
-  return "{"..table.concat(parts,",").."}"
-end
-
-local function json_parse_flat(s)
-  local t={}
-  for k,v in s:gmatch('"(.-)"%s*:%s*([^,}]+)') do
-    v=v:gsub('^"%s*',''):gsub('%s*"$','')
-    if v=="true" then t[k]=true elseif v=="false" then t[k]=false
-    elseif v:match("^%-?%d+%.?%d*$") then t[k]=tonumber(v) else t[k]=v end
-  end
-  return t
 end
 
 local function status_write()
@@ -270,7 +412,6 @@ local function status_poll()
   last_remote = d
   last_remote_received = t
 
-  -- Folge dem Leader
   if d.index and d.index~=current then
     goto_i(math.max(1, math.min(#setlist.entries, d.index)), d.status=="play")
   end
@@ -290,7 +431,6 @@ local function engine()
 end
 
 
-
 -- ============================================================
 -- KAPITEL 5 — REMOTE/MIDI (ExtState)
 -- ============================================================
@@ -308,13 +448,13 @@ local function handle_remote()
     stop_play()
   elseif cmd == "fullscreen_toggle" then
     fullscreen = not fullscreen
+    mark_settings_dirty()
   else
     local n = cmd:match("^goto:(%d+)$")
     if n then goto_i(tonumber(n), mode=="SHOW") end
   end
   reaper.DeleteExtState(REMOTE_KEY, "cmd", true)
 end
-
 
 
 -- ============================================================
@@ -355,19 +495,12 @@ local function rebuild_fonts()
 end
 
 
-
 -- ============================================================
 -- KAPITEL 7 — GUI: TOOLBAR, EDIT-PANEL, SHOW-PANEL
 -- ============================================================
 
--- ---------- Sync-Status berechnen (Ampel) ----------
 local function compute_sync_state()
-  local state = {
-    color="gray", emoji="⚪", label="No data",
-    detail="Warte auf Leader...",
-    latency_ms=nil, file_age=nil, ok=false
-  }
-
+  local state = { color="gray", emoji="⚪", label="No data", detail="Warte auf Leader...", latency_ms=nil, file_age=nil, ok=false }
   if role == "LEADER" then
     local age = now() - (last_write or 0)
     state.file_age = age
@@ -381,73 +514,60 @@ local function compute_sync_state()
     end
     return state
   end
-
-  -- Follower:
   if not last_read_ok or not last_remote then
     state.color="red"; state.emoji="🔴"; state.label="No signal"
     state.detail = "Kann status.json nicht lesen oder parsen"
     return state
   end
-
   local now_t = now()
   local age = now_t - (last_remote.ts or last_remote_received or now_t)
   state.file_age = age
   local latency = (last_remote.ts and (now_t - last_remote.ts)) or nil
   state.latency_ms = latency and (latency*1000) or nil
-
   local index_match = (last_remote.index == current)
   local status_match = ((last_remote.status=="play") == is_playing) or (last_remote.status=="stop" and not is_playing)
-
   if index_match and status_match and age < 0.6 then
     state.color="green"; state.emoji="🟢"; state.label="In Sync"; state.ok=true
-    state.detail=string.format("Index=%d ok, age=%.0f ms%s",
-      current, age*1000, latency and string.format(", ~lat=%.0f ms", state.latency_ms) or "")
+    state.detail=string.format("Index=%d ok, age=%.0f ms%s", current, age*1000, latency and string.format(", ~lat=%.0f ms", state.latency_ms) or "")
   elseif age < 2.0 then
     state.color="yellow"; state.emoji="🟡"; state.label="Catching up"
     local miss = {}
     if not index_match then miss[#miss+1]="Index" end
     if not status_match then miss[#miss+1]="Status" end
-    state.detail=string.format("Age=%.0f ms, Mismatch: %s%s",
-      age*1000, (#miss>0 and table.concat(miss,"+") or "klein"),
-      latency and string.format(", ~lat=%.0f ms", state.latency_ms) or "")
+    state.detail=string.format("Age=%.0f ms, Mismatch: %s%s", age*1000, (#miss>0 and table.concat(miss,"+") or "klein"), latency and string.format(", ~lat=%.0f ms", state.latency_ms) or "")
   else
     state.color="red"; state.emoji="🔴"; state.label="Stale/No signal"
     state.detail=string.format("Zu alt (%.1fs). Prüfe Netzwerk/Pfad.", age)
   end
-
   return state
 end
 
--- ---------- Toolbar ----------
 local function toolbar()
   if reaper.ImGui_BeginChild(ctx, "toolbar", 0, math.floor(42*UI_SCALE), 0) then
-    -- Mode
     if reaper.ImGui_Button(ctx, (mode=="EDIT" and "● " or "○ ").."Edit") then mode="EDIT" end
     reaper.ImGui_SameLine(ctx)
     if reaper.ImGui_Button(ctx, (mode=="SHOW" and "● " or "○ ").."Show") then mode="SHOW" end
     reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
 
-    -- Role
-    if reaper.ImGui_Button(ctx, (role=="LEADER" and "★ " or "☆ ").."Leader") then role="LEADER" end
+    if reaper.ImGui_Button(ctx, (role=="LEADER" and "★ " or "☆ ").."Leader") then role="LEADER"; mark_settings_dirty(); save_settings(true) end
     reaper.ImGui_SameLine(ctx)
-    if reaper.ImGui_Button(ctx, (role=="FOLLOWER" and "★ " or "☆ ").."Follower") then role="FOLLOWER" end
+    if reaper.ImGui_Button(ctx, (role=="FOLLOWER" and "★ " or "☆ ").."Follower") then role="FOLLOWER"; mark_settings_dirty(); save_settings(true) end
     reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
 
-    -- Theme
     if reaper.ImGui_Button(ctx, (theme=="Dark" and "🌙 Dark" or "🌞 Light")) then
       theme = (theme=="Dark") and "Light" or "Dark"
+      mark_settings_dirty(); save_settings(true)
     end
     reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
 
-    -- Fullscreen (nur Show)
     if mode=="SHOW" then
       if reaper.ImGui_Button(ctx, fullscreen and "⤢ Windowed (F)" or "⤢ Fullscreen (F)") then
         fullscreen = not fullscreen
+        mark_settings_dirty(); save_settings(true)
       end
       reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
     end
 
-    -- Transport
     if reaper.ImGui_Button(ctx, "⏮ Prev") then prev_song(false) end
     reaper.ImGui_SameLine(ctx)
     if reaper.ImGui_Button(ctx, is_playing and "⏸ Pause" or "▶ Play") then
@@ -456,7 +576,6 @@ local function toolbar()
     reaper.ImGui_SameLine(ctx)
     if reaper.ImGui_Button(ctx, "⏭ Next") then next_song(mode=="SHOW") end
 
-    -- --- Sync-Indicator rechts ---
     if reaper.ImGui_GetContentRegionAvail then
       local avail_w = select(1, reaper.ImGui_GetContentRegionAvail(ctx)) or 0
       if avail_w > 60 then
@@ -481,12 +600,10 @@ local function toolbar()
   end
 end
 
--- ---------- Edit-Panel ----------
 local function panel_edit()
   local avail_w = (reaper.ImGui_GetContentRegionAvail and select(1, reaper.ImGui_GetContentRegionAvail(ctx))) or 0
   local left_w  = math.floor(avail_w * 0.50)
 
-  -- Regions (links)
   if reaper.ImGui_BeginChild(ctx, "regions", left_w, 0, 0) then
     reaper.ImGui_Text(ctx, "Regions")
     reaper.ImGui_SameLine(ctx)
@@ -497,15 +614,13 @@ local function panel_edit()
         reaper.ImGui_TableFlags_RowBg() | reaper.ImGui_TableFlags_Resizable()) then
       reaper.ImGui_TableSetupColumn(ctx, "Idx",  reaper.ImGui_TableColumnFlags_WidthFixed(), 40)
       reaper.ImGui_TableSetupColumn(ctx, "Name")
-      reaper.ImGui_TableSetupColumn(ctx, "Len (min)", reaper.ImGui_TableColumnFlags_WidthFixed(), 90) -- NEU
+      reaper.ImGui_TableSetupColumn(ctx, "Len (min)", reaper.ImGui_TableColumnFlags_WidthFixed(), 90)
       reaper.ImGui_TableSetupColumn(ctx, "",     reaper.ImGui_TableColumnFlags_WidthFixed(), 80)
       reaper.ImGui_TableHeadersRow(ctx)
 
       for i, r in ipairs(regions) do
         local dur_min = region_duration_sec(r) / 60.0
-
         reaper.ImGui_TableNextRow(ctx)
-
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, tostring(r.idx))
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, r.name or "")
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, string.format("%.1f", dur_min))
@@ -522,7 +637,6 @@ local function panel_edit()
 
   reaper.ImGui_SameLine(ctx, 0, math.floor(10*UI_SCALE))
 
-  -- Setlist (rechts)
   if reaper.ImGui_BeginChild(ctx, "setlist", 0, 0, 0) then
     reaper.ImGui_Text(ctx, "Setlist")
     reaper.ImGui_SameLine(ctx)
@@ -551,7 +665,6 @@ local function panel_edit()
     local changed, nm = reaper.ImGui_InputText(ctx, "##setname", setlist.name or "", 256)
     if changed then setlist.name = nm end
 
-    -- Netto-Playtime (Minuten)
     local total_min = setlist_total_minutes()
     reaper.ImGui_SameLine(ctx, 0, math.floor(16*UI_SCALE))
     reaper.ImGui_Text(ctx, string.format("Net playtime: %.1f min", total_min))
@@ -614,9 +727,7 @@ local function panel_edit()
   end
 end
 
--- ---------- Show-Panel (technisch wie Edit-Setlist, gleiche Schrift/Größe) ----------
 local function panel_show()
-  -- Kopf + Transport
   reaper.ImGui_Text(ctx, "Setlist: "..(setlist.name or ""))
   reaper.ImGui_Separator(ctx)
 
@@ -630,11 +741,11 @@ local function panel_show()
   reaper.ImGui_SameLine(ctx)
   if reaper.ImGui_Button(ctx, fullscreen and "⤢ Windowed (F)" or "⤢ Fullscreen (F)") then
     fullscreen = not fullscreen
+    mark_settings_dirty(); save_settings(true)
   end
 
   reaper.ImGui_Separator(ctx)
 
-  -- **Exakt dieselbe Tabelle wie im Edit-Setlist-Panel**
   if reaper.ImGui_BeginTable(ctx, "tbl_showlist", 6,
       reaper.ImGui_TableFlags_RowBg() | reaper.ImGui_TableFlags_Resizable()) then
     reaper.ImGui_TableSetupColumn(ctx, "#",     reaper.ImGui_TableColumnFlags_WidthFixed(), 28)
@@ -690,11 +801,10 @@ end
 
 
 -- ============================================================
--- KAPITEL 8 — HILFE- & INFO-POPUPS (inkl. ABOUT & DIAGNOSTICS)
+-- KAPITEL 8 — HILFE- & INFO-POPUPS
 -- ============================================================
 
 local function draw_help_popups()
-  -- *** Start-Warnung (Haftungsausschluss) ***
   if show_warning_pending then
     local w,h = display_size()
     reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
@@ -712,106 +822,18 @@ local function draw_help_popups()
     if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
     reaper.ImGui_EndPopup(ctx)
   end
-
-  -- Quick Start
-  if show_help_quick then
-    local w,h = display_size()
-    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
-    reaper.ImGui_SetNextWindowSize(ctx, math.floor(640*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
-    reaper.ImGui_OpenPopup(ctx, "Quick Start"); show_help_quick=false
-  end
-  if reaper.ImGui_BeginPopupModal(ctx, "Quick Start", true) then
-    reaper.ImGui_TextWrapped(ctx,
-      "1) Edit-Mode: Links Regions mit 'Add' in die Setlist.\n"..
-      "2) In der Setlist pro Song 'Continue' an/aus.\n"..
-      "3) Show-Mode: ▶ Play startet den markierten Song. N/Next springt weiter.\n"..
-      "4) Fullscreen mit F. A/B-Sync: Role Leader/Follower + gleicher Status-Pfad.")
-    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
-    reaper.ImGui_EndPopup(ctx)
-  end
-
-  -- Shortcuts
-  if show_help_keys then
-    local w,h = display_size()
-    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
-    reaper.ImGui_SetNextWindowSize(ctx, math.floor(520*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
-    reaper.ImGui_OpenPopup(ctx, "Shortcuts"); show_help_keys=false
-  end
-  if reaper.ImGui_BeginPopupModal(ctx, "Shortcuts", true) then
-    reaper.ImGui_Text(ctx, "Tastatur:")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_TextWrapped(ctx,
-      "Space = Play/Pause\nN = Next   |  P = Prev\nE = Edit   |  H = Show\nF = Fullscreen (Show)\n1 = Leader | 2 = Follower\nS = Save   |  R = Regions neu laden")
-    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
-    reaper.ImGui_EndPopup(ctx)
-  end
-
-  -- About & Support
-  if show_help_about then
-    local w,h = display_size()
-    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
-    reaper.ImGui_SetNextWindowSize(ctx, math.floor(640*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
-    reaper.ImGui_OpenPopup(ctx, "About & Support"); show_help_about=false
-  end
-  if reaper.ImGui_BeginPopupModal(ctx, "About & Support", true) then
-    reaper.ImGui_TextWrapped(ctx, "Setlist Manager (Regions) – Styled")
-    reaper.ImGui_Text(ctx, "Version: "..VER)
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_TextWrapped(ctx, "By Sascha Flach")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_TextWrapped(ctx, "Support my Work:")
-    reaper.ImGui_TextWrapped(ctx, "  Patreon: https://www.patreon.com/profile/creators?u=108528455")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_TextWrapped(ctx, "Follow my Band:")
-    reaper.ImGui_TextWrapped(ctx, "  Instagram: https://www.instagram.com/neonyzerband/")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_TextWrapped(ctx, "Hinweis: Links können aus diesem Fenster kopiert werden (STRG+C).")
-    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
-    reaper.ImGui_EndPopup(ctx)
-  end
-
-  -- Diagnostics
-  if show_help_diag then
-    local w,h = display_size()
-    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
-    reaper.ImGui_SetNextWindowSize(ctx, math.floor(640*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
-    reaper.ImGui_OpenPopup(ctx, "Diagnostics"); show_help_diag=false
-  end
-  if reaper.ImGui_BeginPopupModal(ctx, "Diagnostics", true) then
-    local st = compute_sync_state()
-    reaper.ImGui_TextWrapped(ctx, "Sync: "..st.label.."  "..st.emoji)
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_TextWrapped(ctx, st.detail)
-    reaper.ImGui_TextWrapped(ctx, "Role: "..role)
-    reaper.ImGui_TextWrapped(ctx, "Status path: "..(PATH_STATUS or "?"))
-    if role=="FOLLOWER" and last_remote then
-      reaper.ImGui_TextWrapped(ctx, string.format("Leader set: %s", tostring(last_remote.set or "?")))
-      reaper.ImGui_TextWrapped(ctx, string.format("Leader index/status: %s / %s",
-        tostring(last_remote.index or "?"), tostring(last_remote.status or "?")))
-      reaper.ImGui_TextWrapped(ctx, string.format("Leader ts: %s", tostring(last_remote.ts or "?")))
-      if st.latency_ms then reaper.ImGui_TextWrapped(ctx, string.format("Estimated latency: %.0f ms", st.latency_ms)) end
-    end
-    if st.file_age then reaper.ImGui_TextWrapped(ctx, string.format("File age: %.0f ms", st.file_age*1000)) end
-    reaper.ImGui_Separator(ctx)
-    if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
-    reaper.ImGui_EndPopup(ctx)
-  end
 end
 
 
-
 -- ============================================================
--- KAPITEL 9 — HOTKEYS (IM FRAME)  — block while typing
+-- KAPITEL 9 — HOTKEYS (IM FRAME)
 -- ============================================================
 
 local function hotkeys_in_frame()
-  -- Wenn irgendein Eingabeelement aktiv ist ODER ImGui Keyboard-Capture will,
-  -- dann KEINE Shortcuts verarbeiten (sonst stören sie beim Tippen).
   local io = reaper.ImGui_GetIO and reaper.ImGui_GetIO(ctx) or {}
   local wantKeyboard = (io and (io.WantCaptureKeyboard or io.WantTextInput)) and true or false
   local anyItemActive = reaper.ImGui_IsAnyItemActive and reaper.ImGui_IsAnyItemActive(ctx) or false
 
-  -- Optional: Nur reagieren, wenn unser Fenster fokussiert ist
   local windowFocused = true
   if reaper.ImGui_IsWindowFocused then
     local flags = reaper.ImGui_FocusedFlags_RootAndChildWindows and reaper.ImGui_FocusedFlags_RootAndChildWindows() or 0
@@ -822,7 +844,6 @@ local function hotkeys_in_frame()
     return
   end
 
-  -- Shortcuts nur noch, wenn NICHT getippt wird
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Space()) then
     if is_playing then stop_play() else play_entry(setlist.entries[current]) end
   end
@@ -830,11 +851,10 @@ local function hotkeys_in_frame()
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_P()) then prev_song(false) end
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_E()) then mode="EDIT" end
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_H()) then mode="SHOW" end
-  if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_F()) and mode=="SHOW" then fullscreen = not fullscreen end
-  if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_1()) then role="LEADER" end
-  if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_2()) then role="FOLLOWER" end
+  if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_F()) and mode=="SHOW" then fullscreen = not fullscreen; mark_settings_dirty(); save_settings(true) end
+  if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_1()) then role="LEADER"; mark_settings_dirty(); save_settings(true) end
+  if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_2()) then role="FOLLOWER"; mark_settings_dirty(); save_settings(true) end
 end
-
 
 
 -- ============================================================
@@ -845,9 +865,8 @@ local function main()
   local playing,_ = get_play_state()
   is_playing = playing
 
-  -- Auto-Fullscreen beim Wechsel in SHOW
   if mode ~= prev_mode then
-    if mode == "SHOW" then fullscreen = true end
+    if mode == "SHOW" then fullscreen = true; mark_settings_dirty(); save_settings(true) end
     prev_mode = mode
   end
 
@@ -869,7 +888,6 @@ local function main()
   apply_theme()
   local visible, open = reaper.ImGui_Begin(ctx, APP.."  "..VER.."  ["..mode.."]  Role: "..role, true, flags)
   if visible then
-    -- Menubar
     if reaper.ImGui_BeginMenuBar(ctx) then
       if reaper.ImGui_BeginMenu(ctx, "File") then
         if reaper.ImGui_MenuItem(ctx, "Save") then save_set() end
@@ -879,17 +897,65 @@ local function main()
         reaper.ImGui_EndMenu(ctx)
       end
       if reaper.ImGui_BeginMenu(ctx, "Settings") then
-        local changed, nm = reaper.ImGui_InputText(ctx, "Setlist name", setlist.name or "", 256)
-        if changed then setlist.name = nm end
-        local _, sp = reaper.ImGui_InputText(ctx, "Status path (shared)", PATH_STATUS, 512)
-        if sp and sp ~= PATH_STATUS then PATH_STATUS = sp end
+        -- ===== Setlist-Name (Puffer, nicht sofort live) =====
+        local changed_name, nm = reaper.ImGui_InputText(ctx, "Setlist name", INPUT.set_name or "", 256)
+        if changed_name then INPUT.set_name = nm; settings_needs_apply = true end
+
+        -- ===== Status-Pfad (Leader/Follower) =====
+        if reaper.ImGui_InputText ~= nil then
+          local changed_sp, sp = reaper.ImGui_InputText(ctx, "Status path (shared)", INPUT.status_path or "", 512)
+          if changed_sp then INPUT.status_path = sp; settings_needs_apply = true end
+        end
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx, "Browse…##status") then
+          local p = browse_for_status_path()
+          if p then INPUT.status_path = normalize_path(p); settings_needs_apply = true end
+        end
+
+        -- ===== Startup-Disclaimer =====
+        local _, new_warn = reaper.ImGui_Checkbox(ctx, "Show startup disclaimer", SHOW_WARNING)
+        if new_warn ~= SHOW_WARNING then
+          SHOW_WARNING = new_warn
+          mark_settings_dirty()
+        end
+
+        reaper.ImGui_Separator(ctx)
+        reaper.ImGui_Text(ctx, "Setlist storage")
+
+        -- ===== Setlist-Ordner (Puffer) =====
+        if reaper.ImGui_InputText ~= nil then
+          local changed_dir, nd = reaper.ImGui_InputText(ctx, "Setlist folder", INPUT.dir_set or "", 512)
+          if changed_dir then INPUT.dir_set = nd; settings_needs_apply = true end
+        end
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx, "Browse…##dir") then
+          local d = browse_for_dir()
+          if d then INPUT.dir_set = normalize_path(d); settings_needs_apply = true end
+        end
+
+        if reaper.ImGui_Button(ctx, "Use default") then
+          INPUT.dir_set = DIR_SET_DEFAULT
+          settings_needs_apply = true
+        end
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx, "Open in Explorer/Finder") then
+          local open_cmd = (reaper.GetOS():match("Win") and ('explorer "'..(DIR_SET or DIR_SET_DEFAULT)..'"')) or ('open "'..(DIR_SET or DIR_SET_DEFAULT)..'"')
+          if reaper.CF_ShellExecute then
+            reaper.CF_ShellExecute(DIR_SET or DIR_SET_DEFAULT)
+          else
+            os.execute(open_cmd)
+          end
+        end
+
+        -- ===== UI-Scale =====
         local _, newscale = SliderNumber("UI scale", UI_SCALE, 0.8, 2.0)
         if newscale and math.abs(newscale-UI_SCALE) > 1e-3 then
           UI_SCALE = newscale
+          mark_settings_dirty()
           rebuild_fonts()
         end
 
-        -- Repair-Button: mappt fehlende IDs anhand gespeicherter Namen
+        -- ===== Repair-Helper =====
         if reaper.ImGui_Button(ctx, "Repair missing entries by name") then
           scan_regions()
           for _, e in ipairs(setlist.entries) do
@@ -900,6 +966,42 @@ local function main()
           end
         end
         reaper.ImGui_Text(ctx, "Tipp: Pfad auf Netzwerkfreigabe setzen für A/B Sync")
+
+        -- ===== Apply & Save =====
+        reaper.ImGui_Separator(ctx)
+        if settings_needs_apply then
+          reaper.ImGui_Text(ctx, "Pending changes: not applied")
+        else
+          reaper.ImGui_Text(ctx, "Settings are up to date")
+        end
+
+        if reaper.ImGui_Button(ctx, "Apply") then
+          -- Übernehme Puffer → Live-Variablen
+          if INPUT.set_name and INPUT.set_name ~= "" then
+            setlist.name = INPUT.set_name
+          end
+
+          if INPUT.status_path and INPUT.status_path ~= "" and INPUT.status_path ~= PATH_STATUS then
+            PATH_STATUS = INPUT.status_path
+          end
+
+          if INPUT.dir_set and INPUT.dir_set ~= "" and INPUT.dir_set ~= DIR_SET then
+            DIR_SET = normalize_path(INPUT.dir_set)
+            ensure_dir(DIR_SET)
+            save_prefs()
+            refresh_files()
+          end
+
+          mark_settings_dirty()
+          settings_needs_apply = false
+        end
+
+        reaper.ImGui_SameLine(ctx, 0, math.floor(12*UI_SCALE))
+        if reaper.ImGui_Button(ctx, "Save Settings") then
+          save_settings(true)
+          reaper.MB("Settings saved.", "Setlist Manager", 0)
+        end
+
         reaper.ImGui_EndMenu(ctx)
       end
       if reaper.ImGui_BeginMenu(ctx, "Help") then
@@ -907,33 +1009,31 @@ local function main()
         if reaper.ImGui_MenuItem(ctx, "Shortcuts")  then show_help_keys  = true end
         if reaper.ImGui_MenuItem(ctx, "About & Support") then show_help_about = true end
         if reaper.ImGui_MenuItem(ctx, "Diagnostics") then show_help_diag = true end
-        if reaper.ImGui_MenuItem(ctx, "Show disclaimer now") then
-          show_warning_pending = true
-        end
+        if reaper.ImGui_MenuItem(ctx, "Show disclaimer now") then show_warning_pending = true end
         reaper.ImGui_EndMenu(ctx)
       end
       reaper.ImGui_EndMenuBar(ctx)
     end
 
-    -- Toolbar + Panels
     toolbar()
     if mode=="EDIT" then panel_edit() else panel_show() end
     draw_help_popups()
     hotkeys_in_frame()
 
-    -- (Kein Info-Footer mehr)
-
     reaper.ImGui_End(ctx)
   end
   pop_theme()
 
-  if not open then return end
+  if not open then
+    save_settings(true)
+    return
+  end
 
-  -- Engine + Sync
   engine()
   status_write()
   status_poll()
 
+  if settings_dirty then save_settings(false) end
   reaper.defer(main)
 end
 
@@ -943,9 +1043,19 @@ end
 -- KAPITEL 11 — INIT
 -- ============================================================
 
+load_settings()
 ensure_dir(DIR_SET)
 refresh_files()
 scan_regions()
 rebuild_fonts()
+show_warning_pending = SHOW_WARNING
+
+-- NEU: sicherstellen, dass die Edit-Puffer aus den aktuellen Werten gefüllt sind
+INPUT.status_path = PATH_STATUS or (reaper.GetResourcePath() .. "/Setlists/status.json")
+INPUT.dir_set     = DIR_SET or DIR_SET_DEFAULT
+INPUT.set_name    = setlist.name or "My Set"
+settings_needs_apply = false
+
 reaper.defer(main)
+
 

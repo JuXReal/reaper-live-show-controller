@@ -5,8 +5,11 @@
 Ein Lua-Script für **REAPER**, das Setlists für Live-Shows verwaltet und die Steuerung von Songs (Play, Pause, Next, Prev) direkt im REAPER-Interface ermöglicht.  
 Es gibt zwei Hauptmodi:
 
-- **Edit-Modus** – Erstellen, Bearbeiten und Anordnen der Setlist.
-- **Show-Modus** – Anzeige der Setlist in Großschrift für Live-Performance mit direkter Steuerung.
+- **Edit-Modus** – Erstellen, Bearbeiten und Anordnen der Setlist.  
+  ![Edit Mode Screenshot](docs/edit.png)
+
+- **Show-Modus** – Anzeige der Setlist in Großschrift für Live-Performance mit direkter Steuerung.  
+  ![Show Mode Screenshot](docs/show.png)
 
 ⚠️ **Wichtiger Hinweis**: Die Benutzung dieses Scripts für Live-Shows erfolgt **auf eigene Gefahr**!  
 Bitte immer vorher ausgiebig testen, um Ausfälle oder unerwartetes Verhalten während der Performance zu vermeiden.
@@ -145,8 +148,11 @@ Dieses Projekt ist unter der **MIT-Lizenz** veröffentlicht – freie Nutzung, V
 A Lua script for **REAPER** that manages setlists for live shows and allows song control (Play, Pause, Next, Prev) directly in the REAPER interface.  
 It has two main modes:
 
-- **Edit Mode** – Create, edit, and arrange the setlist.
-- **Show Mode** – Large-font display of the setlist for live performance with direct control.
+- **Edit Mode** – Create, edit, and arrange the setlist.  
+  ![Edit Mode Screenshot](docs/edit.png)
+
+- **Show Mode** – Large-font display of the setlist for live performance with direct control.  
+  ![Show Mode Screenshot](docs/show.png)
 
 ⚠️ **Important Note**: Using this script for live shows is **at your own risk**!  
 Always test extensively before using it in a live performance to avoid unexpected behavior.

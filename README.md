@@ -2,283 +2,254 @@
 
 # REAPER Live Show Setlist Controller
 
-Ein Lua-Script für **REAPER**, das Setlists für Live-Shows verwaltet und die Steuerung von Songs (Play, Pause, Next, Prev) direkt im REAPER-Interface ermöglicht.  
-Es gibt zwei Hauptmodi:
+Ein Lua-Script-Bundle für **REAPER**, das Setlists für Live-Shows verwaltet, Songs steuert (*Play, Pause, Next, Prev*) und ein separates **HUD/Uhr-Fenster** mit **Gesamtspielzeit**, **Restspielzeit** und **ETA Endzeit (Uhrzeit)** bereitstellt.
+
+Es gibt zwei Hauptmodi im Hauptscript:
 
 - **Edit-Modus** – Erstellen, Bearbeiten und Anordnen der Setlist.  
   ![Edit Mode Screenshot](docs/edit.png)
 
-- **Show-Modus** – Anzeige der Setlist in Großschrift für Live-Performance mit direkter Steuerung.  
+- **Show-Modus** – Große Anzeige für Live-Performances mit direkter Steuerung.  
   ![Show Mode Screenshot](docs/show.png)
 
-⚠️ **Wichtiger Hinweis**: Die Benutzung dieses Scripts für Live-Shows erfolgt **auf eigene Gefahr**!  
-Bitte immer vorher ausgiebig testen, um Ausfälle oder unerwartetes Verhalten während der Performance zu vermeiden.
+Zusätzliches, separates HUD:
+
+- **Setlist HUD (Uhr)** – Großes, skalierbares Infofenster mit Gesamt/Rest/ETA.  
+  ![HUD Screenshot](docs/time_counter.png)
+
+> ⚠️ **Wichtiger Hinweis**: Einsatz **auf eigene Gefahr**. Vor Live-Shows unbedingt ausführlich testen.
 
 ---
 
 ## Features
 
 - **Setlist-Verwaltung**
-  - Songs hinzufügen, umsortieren, entfernen.
-  - Mehrere Setlists speichern und laden.
+  - Regions scannen, Songs hinzufügen, umsortieren, entfernen
+  - Setlists als `*.reaplaylist.txt` speichern & laden
+  - *Repair by name*: fehlende Region-IDs anhand der Namen wiederherstellen
 - **Show-Modus**
-  - Große, gut lesbare Anzeige aller Songs.
-  - Steuerbuttons für *Prev*, *Play/Pause*, *Next* direkt verfügbar.
-  - Identisches Layout wie im Edit-Modus (nur optimiert für Live).
-- **Leader/Follower-Modus**
-  - Synchronisation zwischen mehreren Rechnern über Netzwerk.
-- **Dark Mode** & Fensteroptionen (*Windowed*, Vollbild).
-- Speichert automatisch die zuletzt geladene Setlist.
+  - Große, gut lesbare Ansicht; Windowed/Vollbild
+  - Steuerbuttons: *Prev* / *Play/Pause* / *Next*
+  - Schreibgeschützt (kein versehentliches Editieren im Show-Modus)
+- **Leader/Follower**
+  - Dateibasierte Sync über **gemeinsame `status.json`** (Netzwerkfreigabe)
+  - Follower übernimmt Index/Play/Pause automatisch
+  - Breiter Diagnose-Tooltip (Alter, Latenz, Pfad, Leader-Status)
+- **HUD / Uhr (separates Script)**
+  - Zeigt **Gesamt**, **Rest**, **ETA (HH:MM)**
+  - **Auto-Fit**: Schrift passt sich dem Fenster an (umschaltbar)
+  - Manueller Scale via Slider oder `Ctrl` + `+`/`-`
+- **Design & UX**
+  - Light/Dark-Theme, UI-Scale (Hauptscript)
+  - Robuste Pfadbehandlung (Windows/macOS), Datei/Ordner-Dialoge (JS-API)
+  - Persistente Settings (inkl. Fullscreen-State und HUD-Scale)
+
+---
+
+## Enthaltene Skripte
+
+- `Setlist_Manager_Regions_ImGui_Styled.lua` – **Hauptscript** (Edit/Show, Leader/Follower, schreibt `status.json`)
+- `Setlist_HUD_Status.lua` – **HUD/Uhr** (liest `status.json`, zeigt Zeiten/ETA)
+- `Start_Setlist_And_HUD.lua` *(optional)* – **Launcher**, der beide Actions startet (Action-IDs eintragen)
 
 ---
 
 ## Voraussetzungen
 
-Damit das Script reibungslos funktioniert, müssen folgende Punkte beachtet werden:
-
 ### Erforderlich
-- **REAPER 6.x oder neuer** (wegen GUI- und TCP-Funktionen im Script).  
-- **SWS Extension** installiert → [Download hier](https://www.sws-extension.org/)  
-  - Die SWS-Extension wird für erweiterte Funktionen in REAPER benötigt.
-- **Script-API in REAPER aktivieren**  
-  - Menü **Options → Preferences → Plug-ins → ReaScript**
-  - **"Enable Lua"** muss aktiviert sein.
+- **REAPER 6.x+**
+- **ReaImGui** (via **ReaPack** installieren; REAPER danach neu starten)
 
-### Optional (empfohlen für Live)
-- **Smooth Seeking aktivieren**  
-  - Menü **Options → Smooth seek (smooth seek on bar/beat change)**
-  - Sorgt dafür, dass Songs beim Wechsel an Takt- oder Beat-Grenzen starten → keine abrupten Sprünge.
-- **Auto-Scroll in Arrange View deaktivieren**  
-  - Damit die Ansicht während der Show nicht springt.
-- **Zweiten Bildschirm im Show-Modus** nutzen  
-  - Ideal, um die Setlist groß für Musiker anzuzeigen.
+### Optional (empfohlen)
+- **SWS Extension** (z. B. für `CF_ShellExecute`) – <https://www.sws-extension.org/>
+- **JS_ReaScript API** (native Datei-/Ordner-Dialoge)
 
 ---
 
 ## Installation
 
-1. **Script herunterladen**  
-   Lade die `.lua`-Datei dieses Projekts von GitHub herunter.
+1. Repo/Dateien herunterladen.
+2. In REAPER: `Actions → Show Action List → Load...` und die `.lua`-Dateien laden.
+3. *(Optional)* Toolbar-Button anlegen: `View → Toolbars` → Rechtsklick → `Add action…`.
 
-2. **In REAPER importieren**  
-   - Öffne in REAPER das Menü: `Actions` → `Show Action List`.
-   - Klicke auf **Load...** und wähle die heruntergeladene `.lua`-Datei.
-   - Script erscheint nun in der Liste und kann wie jede andere Action gestartet werden.
+---
 
-3. **Optional: Toolbar-Button erstellen**  
-   - In REAPER `View` → `Toolbars` öffnen.
-   - Rechtsklick → `Add action` → dein Script auswählen.
-   - Icon zuweisen (optional).
+## Erster Start & Einrichtung
+
+1. **Hauptscript** starten.  
+2. Menü **Settings**:
+   - **Setlist folder** wählen/erstellen (Speicherort für `*.reaplaylist.txt`)
+   - **Status path (shared)** auf eine **gemeinsame** `status.json` (Netzwerkfreigabe) setzen
+   - **Apply** → **Save Settings**
+3. **HUD** starten (`Setlist_HUD_Status.lua`) – liest dieselbe `status.json`.  
+   Im HUD unter **Options**: *Auto-Fit to window* ein/aus, sonst Scale-Slider nutzen.
+4. *(Optional)* **Launcher**: In `Start_Setlist_And_HUD.lua` die beiden **Action-IDs** eintragen  
+   (in der Action-Liste: Rechtsklick → *Copy selected action command ID*). Danach startet ein Klick beide Skripte.
+
+---
+
+## Leader/Follower-Setup (Dateibasiert)
+
+- **Leader**: Rolle *Leader* aktivieren, Status-Pfad auf **gemeinsame** `status.json` setzen → Script schreibt periodisch (Index/Status/Zeit).  
+- **Follower**: Rolle *Follower* aktivieren, **denselben** `status.json`-Pfad setzen → Script liest periodisch und folgt.  
+- Hover über „Leader active / In Sync“ zeigt breiten Tooltip (Alter, Latenz, Pfad, Leader-Infos).
+
+> Kein direkter TCP-Socket – die gemeinsame Datei auf einem **erreichbaren, beschreibbaren** Share ist die Quelle der Wahrheit.
 
 ---
 
 ## Verwendung
 
-1. **Edit-Modus starten**  
-   - Songs hinzufügen, Reihenfolge ändern, speichern.
+### Edit-Modus
+- Regions **Reload** → per **Add** in die Setlist übernehmen  
+- Reihenfolge per **▲ / ▼**, **Continue** toggeln, **X** löscht  
+- **Save** speichert als `*.reaplaylist.txt`
 
-2. **Show-Modus starten**  
-   - Große Anzeige aller Songs, Steuerung per Mausklick oder Tastenkürzel.
-   - Perfekt für Live-Shows auf einem zweiten Bildschirm.
+### Show-Modus
+- Große Anzeige, **Prev / Play/Pause / Next**, **F** für Vollbild  
+- UI ist **read-only** (keine unabsichtlichen Änderungen)
 
-3. **Tastatursteuerung**  
-   - `← / →` für Prev/Next Song.
-   - `Space` für Play/Pause.
+### HUD / Uhr
+- Zeigt **Gesamt**, **Rest**, **ETA**  
+- **Auto-Fit** skaliert Schrift zur Fenstergröße; sonst manueller Scale/Hotkeys
 
 ---
 
-## Leader/Follower Setup (optional)
+## Tastenkürzel (Hauptscript)
 
-Der Leader/Follower-Modus erlaubt es, dass **mehrere Rechner synchronisiert** dieselbe Show steuern oder anzeigen.  
-Das ist nützlich, wenn z. B. du auf der Bühne den Leader bedienst, während am FOH (Front of House) ein Techniker die Show in Echtzeit mitverfolgt.
+- **Space** – Play/Pause  
+- **N** – Next  **P** – Prev  
+- **E** – Edit  **H** – Show  
+- **F** – Fullscreen (nur Show)  
+- **1** – Leader **2** – Follower  
 
-### Funktionsweise
-- **Leader**
-  - Startet, pausiert und wechselt Songs.
-  - Sendet Steuerbefehle per **TCP-Netzwerk** an alle verbundenen Follower.
-  - Führt auch die Setlist und sendet Änderungen live an die Follower.
+**HUD:** `Ctrl` + `+` / `-` (wenn Auto-Fit aus)
 
-- **Follower**
-  - Empfängt Befehle vom Leader.
-  - Spielt Songs synchron mit ab oder zeigt nur die Songliste im Show-Modus.
-  - Kann nicht selbst steuern (reiner Zuhörer).
+---
 
-### Einrichtung
-1. **Leader-PC**
-   - Im Script **"Leader Mode"** aktivieren.
-   - **Port** festlegen (z. B. `5000`).
+## Tipps für Live
 
-2. **Follower-PC**
-   - Im Script **"Follower Mode"** aktivieren.
-   - **IP-Adresse des Leaders** und denselben Port eintragen.
-
-3. **Firewall**
-   - Port freigeben, damit PCs kommunizieren können.
-
-4. **Setlist abgleichen**
-   - Beide REAPER-Instanzen sollten dieselbe Setlist geladen haben  
-     *(oder der Leader sendet sie automatisch beim Start)*.
-
-💡 **Hinweis:** Der Modus ist nur für Mehrrechner-Setups relevant – wenn du nur einen Rechner nutzt, kannst du ihn deaktivieren.
+- **Smooth Seeking** aktivieren: `Options → Smooth seek (on bar/beat change)`  
+- **Auto-Scroll** im Arrange ggf. deaktivieren  
+- **Zweitmonitor** für Show/HUD verwenden  
+- **Netzfreigabe testen** (Rechte/Latenz), bevor es auf die Bühne geht
 
 ---
 
 ## Troubleshooting
 
-- **Schrift zu klein im Show-Modus**  
-  → Überprüfen, ob REAPER in den Anzeigeeinstellungen auf 100% skaliert ist.
+- **HUD zeigt nichts / „status.json nicht gefunden“**  
+  → Pfad im **Hauptscript** & **HUD** identisch? Share erreichbar? Schreibrechte vorhanden?
 
-- **Follower reagiert nicht**  
-  → Firewall-Einstellungen prüfen und sicherstellen, dass der Port offen ist.
+- **Follower hinkt hinterher**  
+  → Langsame Freigabe? Intervall ist großzügig, aber bei sehr trägen Shares hilft schnellere Ablage (lokal + Sync-Dienst).
 
-- **Setlist leer**  
-  → Im Edit-Modus Songs hinzufügen und speichern.
+- **Falsche Restzeit/ETA**  
+  → Region-Start/Ende prüfen, *Continue*-Flags korrekt?
+
+---
+
+## Changelog
+
+### 2.3
+- **Persistenz erweitert**: Fullscreen-State & weitere Settings werden zuverlässig gespeichert/geladen  
+- **Pfad-Handling**: Windows/macOS-sichere Normalisierung & `path_join`, UNC-Fixes  
+- **Robustes JSON**: Flat-Encoder/Parser, sauberes Escaping (inkl. `\u002C` für Kommata)  
+- **SHOW-Modus read-only**: Buttons/Checkboxen im Show-Panel sind deaktiviert  
+- **Regionen-Ende**: Stabilere Enderkennung (`pos >= fin - EPS`)  
+- **Sync-Toleranzen**: WRITE/POLL-Intervalle & EPS für Netzfreigaben großzügiger gewählt  
+- **UX/Diagnose**: Breiter Tooltip mit sauberem Wrap; Leader/Follower-Status detaillierter  
+- **HUD-Integration**: Hauptscript schreibt zusätzlich `total_sec`, `remaining_sec`, `eta_epoch` in `status.json`  
+- **Neues HUD-Script** (`Setlist_HUD_Status.lua`): Auto-Fit, manueller Scale, Pfad-Anzeige, Theme-Follow  
+- **Starter-Script** (optional): Startet Hauptscript + HUD in einem Rutsch  
+- **Settings-Apply-Flow**: Eingabepuffer, „Apply“ übernimmt Pfade/Namen ohne Zurückspringen
+
+### 2.2
+- Fixes: Pfad-Persistenz & Windows-Root, Auto-Save  
+- Diverse Stabilitäts- und UI-Verbesserungen
+
+### 2.1
+- Erste „Styled“-Variante mit Light/Dark, Fullscreen, Hilfe, UI-Scale, A/B-Sync-Grundlage
 
 ---
 
 ## Lizenz
 
-Dieses Projekt ist unter der **MIT-Lizenz** veröffentlicht – freie Nutzung, Veränderung und Weitergabe erlaubt.
+MIT-Lizenz – freie Nutzung, Veränderung und Weitergabe erlaubt.
 
 ---
+
 # English Version
 
 # REAPER Live Show Setlist Controller
 
-A Lua script for **REAPER** that manages setlists for live shows and allows song control (Play, Pause, Next, Prev) directly in the REAPER interface.  
-It has two main modes:
+A Lua script bundle for **REAPER** to manage live setlists, control songs (*Play, Pause, Next, Prev*), and provide a separate **HUD/clock** window showing **Total**, **Remaining**, and **ETA** (clock time).
 
-- **Edit Mode** – Create, edit, and arrange the setlist.  
+Main script modes:
+
+- **Edit Mode** – Create, edit, arrange the setlist.  
   ![Edit Mode Screenshot](docs/edit.png)
 
-- **Show Mode** – Large-font display of the setlist for live performance with direct control.  
+- **Show Mode** – Large live-friendly display with direct controls.  
   ![Show Mode Screenshot](docs/show.png)
 
-⚠️ **Important Note**: Using this script for live shows is **at your own risk**!  
-Always test extensively before using it in a live performance to avoid unexpected behavior.
+Optional separate HUD:
+
+- **Setlist HUD (clock)** – Large, scalable info view with total/remaining/ETA.  
+  ![HUD Screenshot](docs/time_counter.png)
+
+> ⚠️ **Use at your own risk.** Test thoroughly before going on stage.
 
 ---
 
 ## Features
 
-- **Setlist management**
-  - Add, reorder, remove songs.
-  - Save and load multiple setlists.
-- **Show Mode**
-  - Large, easy-to-read display of all songs.
-  - Control buttons for *Prev*, *Play/Pause*, *Next* directly available.
-  - Identical layout to Edit Mode (optimized for live use).
-- **Leader/Follower mode**
-  - Synchronization between multiple computers over the network.
-- **Dark Mode** & window options (*Windowed*, Fullscreen).
-- Automatically saves the last loaded setlist.
+- **Setlist management**: scan regions, add/reorder/remove, save/load `*.reaplaylist.txt`, name-based repair  
+- **Show Mode**: big display, Windowed/Fullscreen, play controls, **read-only** UI  
+- **Leader/Follower** via **file-based** sync using a shared **`status.json`**  
+- **HUD/Clock**: Auto-Fit to window, manual scale, theme-aware, shows path  
+- **Polished UX**: Light/Dark theme, UI scale, robust cross-platform paths, persistent settings
+
+---
+
+## Included
+
+- `Setlist_Manager_Regions_ImGui_Styled.lua` – main script (writes `status.json`)  
+- `Setlist_HUD_Status.lua` – HUD/clock (reads `status.json`)  
+- `Start_Setlist_And_HUD.lua` – optional launcher (put your action IDs)
 
 ---
 
 ## Requirements
 
-To ensure smooth operation, the following points must be considered:
+- **REAPER 6.x+**  
+- **ReaImGui** via **ReaPack** (install, then restart REAPER)
 
-### Required
-- **REAPER 6.x or later** (due to GUI and TCP features in the script).  
-- **SWS Extension** installed → [Download here](https://www.sws-extension.org/)  
-  - Required for extended REAPER features.
-- **Enable Script API in REAPER**  
-  - Menu **Options → Preferences → Plug-ins → ReaScript**
-  - Enable **"Lua"**.
-
-### Optional (recommended for live use)
-- **Enable Smooth Seeking**  
-  - Menu **Options → Smooth seek (smooth seek on bar/beat change)**
-  - Ensures songs start on beat/bar boundaries → no abrupt jumps.
-- **Disable Auto-Scroll in Arrange View**  
-  - Prevents the view from jumping during the show.
-- **Use a second screen in Show Mode**  
-  - Ideal for displaying the setlist in large font to musicians.
+Optional: **SWS Extension**, **JS_ReaScript API**
 
 ---
 
-## Installation
+## Setup (Quick)
 
-1. **Download the script**  
-   Download the `.lua` file from this project's GitHub.
-
-2. **Import into REAPER**  
-   - In REAPER, open: `Actions` → `Show Action List`.
-   - Click **Load...** and select the downloaded `.lua` file.
-   - The script will now appear in the list and can be started like any other action.
-
-3. **Optional: Create a toolbar button**  
-   - In REAPER, open `View` → `Toolbars`.
-   - Right-click → `Add action` → select your script.
-   - Assign an icon (optional).
+1. Run the **main script** → **Settings**: set **Setlist folder** and shared **Status path** → **Apply** / **Save**  
+2. Run the **HUD** (reads the same `status.json`) → Auto-Fit or manual scale  
+3. *(Optional)* Use the **Launcher** to start both with one click
 
 ---
 
-## Usage
+## Hotkeys (main script)
 
-1. **Start Edit Mode**  
-   - Add songs, change order, save.
-
-2. **Start Show Mode**  
-   - Large display of all songs, control via mouse click or hotkeys.
-   - Perfect for live shows on a second screen.
-
-3. **Keyboard controls**  
-   - `← / →` for Prev/Next song.
-   - `Space` for Play/Pause.
+Space = Play/Pause • N = Next • P = Prev • E = Edit • H = Show • F = Fullscreen (Show) • 1 = Leader • 2 = Follower  
+**HUD:** `Ctrl` + `+` / `-` (if Auto-Fit is off)
 
 ---
 
-## Leader/Follower Setup (optional)
+## Changelog
 
-The Leader/Follower mode allows **multiple computers to be synchronized**, controlling or displaying the same show.  
-This is useful when you operate the Leader on stage, while a sound engineer at FOH follows the show in real time.
-
-### How it works
-- **Leader**
-  - Starts, pauses, and switches songs.
-  - Sends commands via **TCP network** to all connected followers.
-  - Manages the setlist and sends live changes to followers.
-
-- **Follower**
-  - Receives commands from the Leader.
-  - Plays songs in sync or only displays the song list in Show Mode.
-  - Cannot control (read-only).
-
-### Setup
-1. **Leader PC**
-   - Enable **"Leader Mode"** in the script.
-   - Set a **port** (e.g., `5000`).
-
-2. **Follower PC**
-   - Enable **"Follower Mode"** in the script.
-   - Enter the **Leader's IP address** and the same port.
-
-3. **Firewall**
-   - Open the port to allow communication.
-
-4. **Sync setlists**
-   - Both REAPER instances should load the same setlist  
-     *(or the Leader sends it automatically at start)*.
-
-💡 **Note:** Only relevant for multi-PC setups – disable if using a single PC.
-
----
-
-## Troubleshooting
-
-- **Font too small in Show Mode**  
-  → Check if REAPER is set to 100% display scaling.
-
-- **Follower not responding**  
-  → Check firewall settings and ensure the port is open.
-
-- **Empty setlist**  
-  → Add and save songs in Edit Mode.
+See the German section above for detailed changes.
 
 ---
 
 ## License
 
-This project is released under the **MIT License** – free to use, modify, and distribute.
+MIT License.

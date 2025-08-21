@@ -492,12 +492,19 @@ end
 local function play_entry(e)
   if not e then return end
   local r = (R(e.region_idx) or R_by_name(e.name)); if not r then return end
+  -- Cursor setzen (seekplay=true, springt live)
   reaper.SetEditCurPos(r.start, true, true)
-  reaper.CSurf_OnPlay(); is_playing = true
+  -- Nur starten, wenn aktuell NICHT gespielt wird (verhindert Stop/Restart-Glitches)
+  local playing = select(1, get_play_state())
+  if not playing then
+    reaper.CSurf_OnPlay()
+  end
+  is_playing = true
 end
 
 local function stop_play()
-  reaper.CSurf_OnStop(); is_playing=false
+  reaper.CSurf_OnStop()
+  is_playing = false
 end
 
 local function goto_i(i,autoplay)
@@ -577,7 +584,7 @@ local function status_poll()
   if d.status=="play" and not is_playing then play_entry(setlist.entries[current]) end
 end
 
--- Stabilere End-Erkennung: pos >= fin - TIME_EPS (statt Delta <= EPS)
+-- Stabilere End-Erkennung + Continue-Logik
 local function engine()
   local e = setlist.entries[current]
   local playing = select(1, get_play_state())
@@ -586,15 +593,29 @@ local function engine()
     if r then
       local pos = reaper.GetPlayPosition() or 0
       if pos >= (r.fin - TIME_EPS) then
-        if e.continue~=false and current < #setlist.entries then
-          next_song(true)
+        if e.continue ~= false then
+          -- Continue EIN: direkt den nächsten Eintrag starten (falls vorhanden)
+          if current < #setlist.entries then
+            next_song(true)
+            return
+          else
+            stop_play()
+            return
+          end
         else
+          -- Continue AUS: auf den nächsten Eintrag springen, aber NICHT starten
+          if current < #setlist.entries then
+            goto_i(current + 1, false) -- nur selektieren
+          end
           stop_play()
+          return
         end
       end
     end
   end
 end
+
+
 
 
 -- ============================================================

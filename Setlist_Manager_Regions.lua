@@ -1286,3 +1286,4 @@ INPUT.set_name    = setlist.name or "My Set"
 settings_needs_apply = false
 
 reaper.defer(main)
+

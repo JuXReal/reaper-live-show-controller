@@ -7,7 +7,7 @@
 -- ============================================================
 
 
---- ============================================================
+-- ============================================================
 -- KAPITEL 1 — REQUIREMENTS, CONFIG & GLOBAL STATE
 -- ============================================================
 
@@ -22,10 +22,15 @@ local VER = "2.3"  -- ↑ Version angehoben
 -- Persistenz-Namespace für Settings
 local EXT_NS = "SetlistMgrStyled"
 
+-- Script-Verzeichnis ermitteln (voller Pfad zu dieser .lua)
+local _, _script_path = reaper.get_action_context()
+local SCRIPT_DIR = (_script_path and _script_path:match("^(.*)[/\\]")) or reaper.GetResourcePath()
+
 -- Default-Verzeichnisse (werden nach load_settings ggf. überschrieben)
-local DIR_SET_DEFAULT = reaper.GetResourcePath() .. "/Setlists"
+local DIR_SET_DEFAULT = SCRIPT_DIR .. "/Setlists"
 local DIR_SET = DIR_SET_DEFAULT
-local PATH_STATUS = reaper.GetResourcePath() .. "/Setlists/status.json"
+local PATH_STATUS_DEFAULT = SCRIPT_DIR .. "/sync/status.json"
+local PATH_STATUS = PATH_STATUS_DEFAULT
 
 -- Sync-Intervalle & Toleranzen (leicht erhöht für Netzfreigaben/AV)
 local WRITE_IVL, POLL_IVL = 0.15, 0.15
@@ -114,6 +119,296 @@ local function path_join(a,b)
   b = b:gsub("^[/\\]+", "")
   return a .. sep .. b
 end
+
+-- Duration-Utils
+local function region_duration_sec(r)
+  if not r then return 0 end
+  local d = (r.fin or 0) - (r.start or 0)
+  if d < 0 then d = 0 end
+  return d
+end
+
+local function entry_duration_sec(e)
+  if not e then return 0 end
+  local r = (e.region_idx and (function() for _,rr in ipairs(regions) do if rr.idx==e.region_idx then return rr end end end)()) or nil
+  r = r or ((e.name and (function()
+      for _,rr in ipairs(regions) do if rr.name==e.name then return rr end end
+    end)()) or nil)
+  return region_duration_sec(r)
+end
+
+local function setlist_total_minutes()
+  local sum = 0
+  for _, e in ipairs(setlist.entries) do
+    sum = sum + entry_duration_sec(e)
+  end
+  return (sum / 60.0), sum
+end
+
+-- ===== Robustes JSON (flat) =====
+local function json_escape_string(s)
+  s = (s or "")
+      :gsub('\\','\\\\')
+      :gsub('"','\\"')
+      :gsub('\r','\\r')
+      :gsub('\n','\\n')
+      :gsub('\t','\\t')
+      :gsub(',', '\\u002C') -- <— wichtig: Kommata neutralisieren
+  return s
+end
+
+local function json_unescape_string(s)
+  s = (s or "")
+      :gsub('\\u002C', ',')
+      :gsub('\\r','\r')
+      :gsub('\\n','\n')
+      :gsub('\\t','\t')
+      :gsub('\\"','"')
+      :gsub('\\\\','\\')
+  return s
+end
+
+local function json_of(t)
+  local parts={}
+  for k,v in pairs(t) do
+    if type(v)=="string" then
+      parts[#parts+1] = '"'..k..'":"'..json_escape_string(v)..'"'
+    elseif type(v)=="boolean" then
+      parts[#parts+1] = '"'..k..'":'..(v and "true" or "false")
+    elseif type(v)=="number" then
+      parts[#parts+1] = '"'..k..'":'..tostring(v)
+    else
+      parts[#parts+1] = '"'..k..'":null'
+    end
+  end
+  return "{"..table.concat(parts,",").."}"
+end
+
+-- Einfache, aber robuste Flat-JSON-Parsing-Funktion
+local function json_parse_flat(s)
+  local i, n = 1, #s
+  local function skip_ws()
+    while i<=n do
+      local c=s:sub(i,i)
+      if c==" " or c=="\t" or c=="\r" or c=="\n" then i=i+1 else break end
+    end
+  end
+  local function parse_string()
+    i=i+1
+    local start=i
+    local buf={}
+    while i<=n do
+      local c=s:sub(i,i)
+      if c=='\\' then
+        buf[#buf+1]=s:sub(start,i-1)
+        local nextc = s:sub(i+1,i+1)
+        if nextc=="" then break end
+        buf[#buf+1] = "\\"..nextc
+        i = i + 2
+        start = i
+      elseif c=='"' then
+        buf[#buf+1]=s:sub(start,i-1)
+        i=i+1
+        return json_unescape_string(table.concat(buf))
+      else
+        i=i+1
+      end
+    end
+    return json_unescape_string(table.concat(buf))
+  end
+  local function parse_value()
+    skip_ws()
+    local c = s:sub(i,i)
+    if c=='"' then
+      return parse_string()
+    end
+    local start=i
+    while i<=n do
+      c = s:sub(i,i)
+      if c=="," or c=="}" then break end
+      i=i+1
+    end
+    local tok = s:sub(start,i-1):match("^%s*(.-)%s*$")
+    if tok=="true" then return true end
+    if tok=="false" then return false end
+    if tok=="null" or tok=="" then return nil end
+    local num = tonumber(tok)
+    if num ~= nil then return num end
+    return tok
+  end
+
+  local t={}
+  skip_ws()
+  if s:sub(i,i) ~= "{" then return t end
+  i=i+1
+  while true do
+    skip_ws()
+    if s:sub(i,i)=="}" then i=i+1 break end
+    if s:sub(i,i)~='"' then break end
+    local key = parse_string()
+    skip_ws()
+    if s:sub(i,i) ~= ":" then break end
+    i=i+1
+    local val = parse_value()
+    t[key]=val
+    skip_ws()
+    local c=s:sub(i,i)
+    if c=="," then i=i+1; goto continue end
+    if c=="}" then i=i+1; break end
+    ::continue::
+  end
+  return t
+end
+
+-- ===== Settings-Persistenz V2 =====
+local function mark_settings_dirty() settings_dirty = true end
+
+local function save_settings(force)
+  local t = {
+    theme = theme,
+    ui_scale = UI_SCALE,
+    dir_set = DIR_SET,
+    path_status = PATH_STATUS,
+    show_warning = SHOW_WARNING,
+    role = role,
+    use_only_default_font = USE_ONLY_DEFAULT_FONT,
+    fullscreen = fullscreen,           -- <— persistieren
+    ver = VER
+  }
+  local now_t = reaper.time_precise()
+  if not force and (now_t - settings_last_save) < SETTINGS_SAVE_IVL and not settings_dirty then
+    return
+  end
+  reaper.SetExtState(EXT_NS, SETTINGS_KEY, json_of(t), true)
+  -- Rückwärtskompatibel: altes Feld (nur dir) weiterpflegen
+  reaper.SetExtState(EXT_NS, "SETLIST_DIR", DIR_SET or "", true)
+  settings_last_save = now_t
+  settings_dirty = false
+end
+
+-- >>> MIGRATION/„Abgewöhnen“: Diese Pfade werden ignoriert und auf Script-Defaults zurückgesetzt
+local LEGACY_BAD_DIRS = {
+  normalize_path("D:\\LiveProject\\setlistlists"),
+  normalize_path(reaper.GetResourcePath() .. "/Setlists")
+}
+local LEGACY_BAD_STATUS = {
+  normalize_path("C:\\Users\\Flach\\AppData\\Roaming\\REAPER/Setlists/status.json"),
+  normalize_path(reaper.GetResourcePath() .. "/Setlists/status.json")
+}
+local function is_in(list, val)
+  if not val or val=="" then return false end
+  for _, x in ipairs(list) do
+    if normalize_path(val) == normalize_path(x) then return true end
+  end
+  return false
+end
+
+local function load_settings()
+  local raw = reaper.GetExtState(EXT_NS, SETTINGS_KEY)
+  if raw and raw ~= "" then
+    local t = json_parse_flat(raw)
+    if t and next(t) ~= nil then
+      theme = (t.theme=="Light") and "Light" or "Dark"
+      UI_SCALE = tonumber(t.ui_scale or UI_SCALE) or UI_SCALE
+
+      -- Kandidaten aus Settings einlesen
+      local dir_loaded   = normalize_path(t.dir_set or DIR_SET_DEFAULT)
+      local status_loaded = normalize_path(t.path_status or PATH_STATUS_DEFAULT)
+
+      -- >>> Abgewöhnen: Falls alter/unerwünschter Pfad, auf Script-Defaults zurücksetzen
+      if is_in(LEGACY_BAD_DIRS, dir_loaded) then
+        dir_loaded = DIR_SET_DEFAULT
+        settings_dirty = true
+      end
+      if is_in(LEGACY_BAD_STATUS, status_loaded) then
+        status_loaded = PATH_STATUS_DEFAULT
+        settings_dirty = true
+      end
+
+      DIR_SET     = dir_loaded
+      PATH_STATUS = status_loaded
+
+      SHOW_WARNING = (t.show_warning ~= false)
+      role = (t.role=="FOLLOWER") and "FOLLOWER" or "LEADER"
+      USE_ONLY_DEFAULT_FONT = (t.use_only_default_font ~= false)
+      fullscreen = (t.fullscreen == true) -- <— laden
+    end
+  else
+    -- Rückwärtskompatibel: altes Feld (nur dir) lesen
+    local dir = reaper.GetExtState(EXT_NS, "SETLIST_DIR")
+    if dir and dir ~= "" then
+      DIR_SET = normalize_path(dir)
+      if is_in(LEGACY_BAD_DIRS, DIR_SET) then
+        DIR_SET = DIR_SET_DEFAULT
+        settings_dirty = true
+      end
+    else
+      DIR_SET = DIR_SET_DEFAULT
+    end
+    -- PATH_STATUS bekommt in der V1-Welt defaultmäßig das Script-Default
+    PATH_STATUS = PATH_STATUS_DEFAULT
+    settings_dirty = true
+  end
+
+  -- Einmalig sicher gehen, dass V2 geschrieben ist & Migrationsänderungen persistieren
+  save_settings(true)
+
+  -- Edit-Buffer aus Settings initialisieren
+  INPUT.status_path = PATH_STATUS or ""
+  INPUT.dir_set     = DIR_SET or ""
+  INPUT.set_name    = setlist.name or "My Set"
+  settings_needs_apply = false
+end
+
+-- Legacy-Helfer (beibehalten)
+local function save_prefs()
+  reaper.SetExtState(EXT_NS, "SETLIST_DIR", DIR_SET or "", true)
+  mark_settings_dirty()
+end
+
+-- ===== NEU: Datei-/Ordner-Dialoge (wenn JS-ReaScript-API vorhanden) =====
+local function has_js_api()
+  return reaper.JS_Dialog_BrowseForSaveFile ~= nil
+end
+
+-- Wähle eine Datei (z.B. status.json); gibt Pfad oder nil zurück
+local function browse_for_status_path()
+  local initial = INPUT.status_path ~= "" and INPUT.status_path or (PATH_STATUS_DEFAULT)
+  local dir = initial:match("^(.*)[/\\].-$") or SCRIPT_DIR
+  local fn  = initial:match("^.*[/\\](.-)$") or "status.json"
+  if has_js_api then
+    local ok, out = reaper.JS_Dialog_BrowseForSaveFile("Choose status.json", dir, fn, "JSON (*.json)\0*.json\0All files (*.*)\0*.*\0")
+    if ok and out and out ~= "" then
+      if not out:lower():match("%.json$") then
+        out = path_join(out, "status.json")
+      end
+      return normalize_path(out)
+    end
+  else
+    local ok, out = reaper.GetUserFileNameForSave(dir..path_sep()..fn, "Choose status.json", ".json")
+    if ok and out and out ~= "" then return normalize_path(out) end
+  end
+  return nil
+end
+
+-- Wähle ein Verzeichnis (Setlists-Ordner); gibt Pfad oder nil zurück
+local function browse_for_dir()
+  local initial = (INPUT.dir_set ~= "" and INPUT.dir_set or (DIR_SET_DEFAULT))
+  local dir = initial
+  if has_js_api() then
+    local ok, out = reaper.JS_Dialog_BrowseForSaveFile("Choose Setlists folder", dir, "", "Folder\0*\0")
+    if ok and out and out ~= "" then
+      local only_dir = out:match("^(.*)[/\\].-$") or out
+      return normalize_path(only_dir)
+    end
+  else
+    local ok, out = reaper.GetUserInputs("Setlists folder", 1, "Path:", initial)
+    if ok and out and out ~= "" then return normalize_path(out) end
+  end
+  return nil
+end
+
+
 
 -- ============================================================
 -- KAPITEL 2 — HILFSFUNKTIONEN (I/O, UI, UTILS)
@@ -226,7 +521,6 @@ local function json_parse_flat(s)
     while i<=n do
       local c=s:sub(i,i)
       if c=='\\' then
-        -- Escape
         buf[#buf+1]=s:sub(start,i-1)
         local nextc = s:sub(i+1,i+1)
         if nextc=="" then break end
@@ -299,7 +593,7 @@ local function save_settings(force)
     show_warning = SHOW_WARNING,
     role = role,
     use_only_default_font = USE_ONLY_DEFAULT_FONT,
-    fullscreen = fullscreen,           -- <— persistieren
+    fullscreen = fullscreen,
     ver = VER
   }
   local now_t = now()
@@ -325,7 +619,7 @@ local function load_settings()
       SHOW_WARNING = (t.show_warning ~= false)
       role = (t.role=="FOLLOWER") and "FOLLOWER" or "LEADER"
       USE_ONLY_DEFAULT_FONT = (t.use_only_default_font ~= false)
-      fullscreen = (t.fullscreen == true) -- <— laden
+      fullscreen = (t.fullscreen == true)
     end
   else
     local dir = reaper.GetExtState(EXT_NS, "SETLIST_DIR")
@@ -335,7 +629,7 @@ local function load_settings()
   settings_dirty = true
   save_settings(true)
 
-  -- NEU: Edit-Buffer aus Settings initialisieren
+  -- Edit-Buffer aus Settings initialisieren
   INPUT.status_path = PATH_STATUS or ""
   INPUT.dir_set     = DIR_SET or ""
   INPUT.set_name    = setlist.name or "My Set"
@@ -354,29 +648,46 @@ local function has_js_api()
 end
 
 -- Wähle eine Datei (z.B. status.json); gibt Pfad oder nil zurück
+-- Fallbacks:
+--   1) JS_ReaScriptAPI: echter Save-Dialog
+--   2) (falls vorhanden) reaper.GetUserFileNameForSave
+--   3) Reiner Texteingabe-Dialog (GetUserInputs)  << neu, robust
 local function browse_for_status_path()
-  local initial = INPUT.status_path ~= "" and INPUT.status_path or (reaper.GetResourcePath() .. "/Setlists/status.json")
+  local initial = (INPUT.status_path ~= "" and INPUT.status_path)
+                  or (PATH_STATUS and PATH_STATUS ~= "" and PATH_STATUS)
+                  or (reaper.GetResourcePath() .. "/Setlists/status.json")
   local dir = initial:match("^(.*)[/\\].-$") or reaper.GetResourcePath()
   local fn  = initial:match("^.*[/\\](.-)$") or "status.json"
+
   if has_js_api() then
     local ok, out = reaper.JS_Dialog_BrowseForSaveFile("Choose status.json", dir, fn, "JSON (*.json)\0*.json\0All files (*.*)\0*.*\0")
     if ok and out and out ~= "" then
       if not out:lower():match("%.json$") then
-        -- OS-sicher "status.json" anhängen
         out = path_join(out, "status.json")
       end
       return normalize_path(out)
     end
-  else
+  elseif reaper.GetUserFileNameForSave then
     local ok, out = reaper.GetUserFileNameForSave(dir..path_sep()..fn, "Choose status.json", ".json")
-    if ok and out and out ~= "" then return normalize_path(out) end
+    if ok and out and out ~= "" then
+      return normalize_path(out)
+    end
+  else
+    -- Text-Fallback: Benutzer gibt den Pfad direkt ein
+    local ok, out = reaper.GetUserInputs("Status path", 1, "Path to status.json:", initial)
+    if ok and out and out ~= "" then
+      if not out:lower():match("%.json$") then
+        out = path_join(out, "status.json")
+      end
+      return normalize_path(out)
+    end
   end
   return nil
 end
 
 -- Wähle ein Verzeichnis (Setlists-Ordner); gibt Pfad oder nil zurück
 local function browse_for_dir()
-  local initial = (INPUT.dir_set ~= "" and INPUT.dir_set or (reaper.GetResourcePath().."/Setlists"))
+  local initial = (INPUT.dir_set ~= "" and INPUT.dir_set) or (DIR_SET or (reaper.GetResourcePath().."/Setlists"))
   local dir = initial
   if has_js_api() then
     local ok, out = reaper.JS_Dialog_BrowseForSaveFile("Choose Setlists folder", dir, "", "Folder\0*\0")
@@ -385,12 +696,13 @@ local function browse_for_dir()
       return normalize_path(only_dir)
     end
   else
-    -- Fallback: Text-Input
+    -- Fallback: Text-Input (robust auf allen Systemen)
     local ok, out = reaper.GetUserInputs("Setlists folder", 1, "Path:", initial)
     if ok and out and out ~= "" then return normalize_path(out) end
   end
   return nil
 end
+
 
 
 -- ============================================================
@@ -507,11 +819,23 @@ local function stop_play()
   is_playing = false
 end
 
-local function goto_i(i,autoplay)
+-- Neuer Helper: Cursor still zum Start der Region setzen (ohne Play)
+local function cue_entry(e)
+  if not e then return end
+  local r = (R(e.region_idx) or R_by_name(e.name)); if not r then return end
+  -- SetEditCurPos(position, moveview, seekplay)
+  reaper.SetEditCurPos(r.start, true, false)
+end
+
+local function goto_i(i, autoplay)
   if #setlist.entries==0 then current=1 return end
   if i<1 then i=1 elseif i>#setlist.entries then i=#setlist.entries end
-  current=i
-  if autoplay then play_entry(setlist.entries[current]) end
+  current = i
+  if autoplay then
+    play_entry(setlist.entries[current])
+  else
+    cue_entry(setlist.entries[current])  -- still zum Start der Region springen
+  end
 end
 
 local function next_song(a) if #setlist.entries>0 then goto_i(current+1,a) end end
@@ -605,7 +929,7 @@ local function engine()
         else
           -- Continue AUS: auf den nächsten Eintrag springen, aber NICHT starten
           if current < #setlist.entries then
-            goto_i(current + 1, false) -- nur selektieren
+            goto_i(current + 1, false) -- selektieren & Cursor setzen
           end
           stop_play()
           return
@@ -613,9 +937,22 @@ local function engine()
       end
     end
   end
+
+  -- >>> FIX: auch wenn REAPER bereits gestoppt hat, aber Cursor am Ende steht,
+  --          trotzdem zur nächsten Region springen, falls Continue AUS.
+  if not playing and #setlist.entries > 0 then
+    local e2 = setlist.entries[current]
+    if e2 and e2.continue == false then
+      local r2 = R(e2.region_idx) or R_by_name(e2.name)
+      if r2 then
+        local pos = (reaper.GetCursorPosition and reaper.GetCursorPosition()) or (reaper.GetPlayPosition() or 0)
+        if pos >= (r2.fin - TIME_EPS) and current < #setlist.entries then
+          goto_i(current + 1, false) -- selektieren & Cursor setzen, kein Autoplay
+        end
+      end
+    end
+  end
 end
-
-
 
 
 -- ============================================================
@@ -1258,6 +1595,23 @@ local function main()
     return
   end
 
+  -- >>> FIX-BLOCK: Falls schon gestoppt wurde und Continue AUS ist,
+  --                aber der Cursor am Regionsende steht → still zur nächsten Region springen.
+  do
+    if not playing and #setlist.entries > 0 then
+      local e = setlist.entries[current]
+      if e and e.continue == false then
+        local r = R(e.region_idx) or R_by_name(e.name)
+        if r then
+          local pos = (reaper.GetCursorPosition and reaper.GetCursorPosition()) or (reaper.GetPlayPosition() or 0)
+          if pos >= (r.fin - TIME_EPS) and current < #setlist.entries then
+            goto_i(current + 1, false) -- selektieren & Cursor setzen, kein Autoplay
+          end
+        end
+      end
+    end
+  end
+
   engine()
   status_write()
   status_poll()
@@ -1265,6 +1619,8 @@ local function main()
   if settings_dirty then save_settings(false) end
   reaper.defer(main)
 end
+
+
 
 
 
@@ -1280,10 +1636,12 @@ rebuild_fonts()
 show_warning_pending = SHOW_WARNING
 
 -- NEU: sicherstellen, dass die Edit-Puffer aus den aktuellen Werten gefüllt sind
-INPUT.status_path = PATH_STATUS or (reaper.GetResourcePath() .. "/Setlists/status.json")
+INPUT.status_path = PATH_STATUS or (PATH_STATUS_DEFAULT)
 INPUT.dir_set     = DIR_SET or DIR_SET_DEFAULT
 INPUT.set_name    = setlist.name or "My Set"
 settings_needs_apply = false
 
 reaper.defer(main)
+
+
 

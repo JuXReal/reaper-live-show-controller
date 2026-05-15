@@ -65,7 +65,19 @@ local function parse_fields(s)
   local tot = tonumber(s:match('%"total_sec"%s*:%s*([%d%.%-]+)') or "")
   local rem = tonumber(s:match('%"remaining_sec"%s*:%s*([%d%.%-]+)') or "")
   local eta = tonumber(s:match('%"eta_epoch"%s*:%s*([%d%.%-]+)') or "")
-  if tot and rem and eta then return tot, rem, eta end
+  
+  local n_name = s:match('%"next_region_name"%s*:%s*%"([^%"]*)%"') or ""
+  if n_name ~= "" then
+    n_name = n_name:gsub('\u002C', ','):gsub('\r','
+'):gsub('\n','
+'):gsub('\t','	'):gsub('\"','"'):gsub('\\','\')
+  end
+  
+  local c_flag = s:match('%"continue_flag"%s*:%s*(true)') ~= nil
+  local status_str = s:match('%"status"%s*:%s*%"([^%"]*)%"')
+  local i_stop = (status_str == "stop")
+
+  if tot and rem and eta then return tot, rem, eta, n_name, c_flag, i_stop end
   return nil
 end
 local function fmt_mmss(sec)
@@ -77,10 +89,27 @@ end
 -- State
 local POLL_IVL, last_poll = 0.25, 0
 local total_sec, remaining_sec, eta_epoch = 0, 0, os.time()
+local next_region_name = ""
+local continue_flag = true
+local is_stopped = false
 local last_ok, show_settings = false, false
 
 local function poll()
   local t = reaper.time_precise(); if (t - last_poll) < POLL_IVL then return end
+  last_poll = t
+  local s = readf(PATH_STATUS)
+  if not s then last_ok=false; return end
+  local tot, rem, eta, n_name, c_flag, i_stop = parse_fields(s)
+  if tot then 
+    total_sec, remaining_sec, eta_epoch = tot, rem, eta
+    next_region_name = n_name
+    continue_flag = c_flag
+    is_stopped = i_stop
+    last_ok=true 
+  else 
+    last_ok=false 
+  end
+end
   last_poll = t
   local s = readf(PATH_STATUS)
   if not s then last_ok=false; return end
@@ -167,29 +196,36 @@ local function main()
       reaper.ImGui_EndMenuBar(ctx)
     end
 
+        -- Werte für Anzeige vorbereiten
+    local v1 = fmt_mmss(total_sec or 0)
+    local v2 = fmt_mmss(remaining_sec or 0)
+    local v3 = os.date("%H:%M", (eta_epoch or os.time()))
+    local v4 = (next_region_name ~= "") and next_region_name or "---"
+    if not continue_flag then 
+      v4 = "🛑 STOPS AFTER CURRENT" 
+    else
+      v4 = "⏩ " .. v4
+    end
+
     -- ===== Auto-Fit berechnen =====
     local scale = HUD_SCALE
     if HUD_AUTOFIT and reaper.ImGui_SetWindowFontScale and reaper.ImGui_CalcTextSize then
       -- 1) Messung in Scale 1.0
       reaper.ImGui_SetWindowFontScale(ctx, 1.0)
-      local l1 = "Gesamtspielzeit Set:"
-      local l2 = "Verbleibende Spielzeit Set:"
-      local l3 = "ETA Endzeit:"
-      local v1 = fmt_mmss(total_sec or 0)
-      local v2 = fmt_mmss(remaining_sec or 0)
-      local v3 = os.date("%H:%M", (eta_epoch or os.time()))
-
+      local l1, l2, l3, l4 = "Gesamtspielzeit Set:", "Verbleibende Spielzeit Set:", "ETA Endzeit:", "Up Next:"
       local lw1 = select(1, reaper.ImGui_CalcTextSize(ctx, l1))
       local lw2 = select(1, reaper.ImGui_CalcTextSize(ctx, l2))
       local lw3 = select(1, reaper.ImGui_CalcTextSize(ctx, l3))
+      local lw4 = select(1, reaper.ImGui_CalcTextSize(ctx, l4))
       local vw1 = select(1, reaper.ImGui_CalcTextSize(ctx, v1))
       local vw2 = select(1, reaper.ImGui_CalcTextSize(ctx, v2))
       local vw3 = select(1, reaper.ImGui_CalcTextSize(ctx, v3))
-      local label_w = math.max(lw1, math.max(lw2, lw3))
-      local value_w = math.max(vw1, math.max(vw2, vw3))
+      local vw4 = select(1, reaper.ImGui_CalcTextSize(ctx, v4))
+      local label_w = math.max(lw1, math.max(lw2, math.max(lw3, lw4)))
+      local value_w = math.max(vw1, math.max(vw2, math.max(vw3, vw4)))
       local line_h  = select(2, reaper.ImGui_CalcTextSize(ctx, "A")) + 6
 
-      scale = auto_fit_scale(label_w, value_w, line_h, 3)
+      scale = auto_fit_scale(label_w, value_w, line_h, 4)
       -- 2) Scale setzen
       reaper.ImGui_SetWindowFontScale(ctx, scale)
     else
@@ -206,14 +242,18 @@ local function main()
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, label)
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, value)
       end
-      row("Gesamtspielzeit Set:",       fmt_mmss(total_sec or 0))
-      row("Verbleibende Spielzeit Set:",fmt_mmss(remaining_sec or 0))
-      row("ETA Endzeit:",               os.date("%H:%M", (eta_epoch or os.time())))
+      row("Gesamtspielzeit Set:", v1)
+      row("Verbleibende Spielzeit Set:", v2)
+      row("ETA Endzeit:", v3)
+      row("Up Next:", v4)
       reaper.ImGui_EndTable(ctx)
     else
       -- Fallback ohne Table
-      reaper.ImGui_Text(ctx, "Gesamtspielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, fmt_mmss(total_sec or 0))
-      reaper.ImGui_Text(ctx, "Verbleibende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, fmt_mmss(remaining_sec or 0))
+      reaper.ImGui_Text(ctx, "Gesamtspielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v1)
+      reaper.ImGui_Text(ctx, "Verbleibende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v2)
+      reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v3)
+      reaper.ImGui_Text(ctx, "Up Next:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v4)
+    ende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, fmt_mmss(remaining_sec or 0))
       reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, os.date("%H:%M", (eta_epoch or os.time())))
     end
 

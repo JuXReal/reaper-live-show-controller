@@ -36,6 +36,7 @@ Zusätzliches, separates HUD:
   - Playlisten und `status.json` (für das HUD) im Skript-Ordner (perfekt für Cloud-Sync)
 - **HUD / Uhr (separates Script)**
   - Zeigt **Gesamt**, **Rest**, **ETA (HH:MM)**
+  - **Neu: Fullscreen Modus (F)** für maximale Bühnentauglichkeit (NOW, NEXT, ETA)
   - **Auto-Fit**: Schrift passt sich dem Fenster an (umschaltbar)
   - Manueller Scale via Slider oder `Ctrl` + `+`/`-`
 - **Design & UX**
@@ -108,6 +109,7 @@ Zusätzliches, separates HUD:
 
 ### HUD / Uhr
 - Zeigt **Gesamt**, **Rest**, **ETA**  
+- **Vollbild (F)**: Riesige Anzeige des laufenden und nächsten Songs sowie der Endzeit.
 - **Auto-Fit** skaliert Schrift zur Fenstergröße; sonst manueller Scale/Hotkeys
 
 ---
@@ -119,7 +121,7 @@ Zusätzliches, separates HUD:
 - **E** – Edit  **H** – Show  
 - **F** – Fullscreen (nur Show)  
 
-**HUD:** `Ctrl` + `+` / `-` (wenn Auto-Fit aus)
+**HUD:** `F` für Vollbild, `Ctrl` + `+` / `-` für Zoom (wenn Auto-Fit aus)
 
 ---
 
@@ -143,6 +145,11 @@ Zusätzliches, separates HUD:
 ---
 
 ## Changelog
+
+### 2.5
+- **Ausfallsicherheit für Live (Fail-Safes)**: Crash-Schutz (`pcall`) in allen Hauptschleifen, lag-resistentes Region-Skipping und atomare `status.json` Writes.
+- **HUD Toleranz**: HUD verzeiht nun kurze Lese-/Netzwerkaussetzer (3 Sekunden Grace-Period).
+- **HUD Vollbild**: Taste `F` (oder Menü) wechselt in eine gigantische Ansicht, die *Laufenden Song*, *Nächsten Song* und *ETA* anzeigt.
 
 ### 2.4
 - **Entfernung von Leader/Follower**: Fokus auf robusten Standalone-Betrieb & Cloud-Sync
@@ -197,7 +204,7 @@ Optional separate HUD:
 - **Setlist management**: scan regions, add/reorder/remove, save/load `*.reaplaylist.txt`, name-based repair  
 - **Show Mode**: big display, Windowed/Fullscreen, play controls with precise resume, **read-only** UI  
 - **Cloud-Ready Sync**: Local UI configs per machine, while setlists and status files sync perfectly via Syncthing/Dropbox.
-- **HUD/Clock**: Auto-Fit to window, manual scale, theme-aware, shows path  
+- **HUD/Clock**: Auto-Fit to window, manual scale, theme-aware, shows path. Features a giant **Fullscreen Mode** (`F`) showing current song, next song and ETA.
 - **Polished UX**: Light/Dark theme, UI scale, robust cross-platform paths, persistent settings
 
 ---
@@ -230,13 +237,13 @@ Optional: **SWS Extension**, **JS_ReaScript API**
 ## Hotkeys (main script)
 
 Space = Play/Stop • N = Next • P = Prev • E = Edit • H = Show • F = Fullscreen (Show) 
-**HUD:** `Ctrl` + `+` / `-` (if Auto-Fit is off)
+**HUD:** `F` = Fullscreen • `Ctrl` + `+` / `-` (if Auto-Fit is off)
 
 ---
 
 ## Changelog
 
-See the German section above for detailed changes up to v2.4.
+See the German section above for detailed changes up to v2.5.
 
 ---
 

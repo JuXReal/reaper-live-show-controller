@@ -9,7 +9,7 @@ if not reaper or not reaper.ImGui_CreateContext then
   return
 end
 
-local APP = "Setlist HUD"
+local APP = "Setlist HUD v2.4"
 local ctx = reaper.ImGui_CreateContext(APP)
 
 -- Persistenz

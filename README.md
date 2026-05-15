@@ -2,7 +2,7 @@
 
 # REAPER Live Show Setlist Controller
 
-Ein Lua-Script-Bundle für **REAPER**, das Setlists für Live-Shows verwaltet, Songs steuert (*Play, Pause, Next, Prev*) und ein separates **HUD/Uhr-Fenster** mit **Gesamtspielzeit**, **Restspielzeit** und **ETA Endzeit (Uhrzeit)** bereitstellt.
+Ein Lua-Script-Bundle für **REAPER**, das Setlists für Live-Shows verwaltet, Songs steuert (*Play, Stop, Next, Prev*) und ein separates **HUD/Uhr-Fenster** mit **Gesamtspielzeit**, **Restspielzeit** und **ETA Endzeit (Uhrzeit)** bereitstellt.
 
 Es gibt zwei Hauptmodi im Hauptscript:
 
@@ -29,26 +29,24 @@ Zusätzliches, separates HUD:
   - *Repair by name*: fehlende Region-IDs anhand der Namen wiederherstellen
 - **Show-Modus**
   - Große, gut lesbare Ansicht; Windowed/Vollbild
-  - Steuerbuttons: *Prev* / *Play/Pause* / *Next*
+  - Steuerbuttons: *Prev* / *Play* / *Stop* / *Next* mit Resume-Fähigkeit
   - Schreibgeschützt (kein versehentliches Editieren im Show-Modus)
-- **Leader/Follower**
-  - Dateibasierte Sync über **gemeinsame `status.json`** (Netzwerkfreigabe)
-  - Follower übernimmt Index/Play/Pause automatisch
-  - Breiter Diagnose-Tooltip (Alter, Latenz, Pfad, Leader-Status)
+- **Dateibasierte Konfiguration & Sync**
+  - Lokale Einstellungen (UI Scale, Theme) pro Rechner über `setlist_config.json`
+  - Playlisten und `status.json` (für das HUD) im Skript-Ordner (perfekt für Cloud-Sync)
 - **HUD / Uhr (separates Script)**
   - Zeigt **Gesamt**, **Rest**, **ETA (HH:MM)**
   - **Auto-Fit**: Schrift passt sich dem Fenster an (umschaltbar)
   - Manueller Scale via Slider oder `Ctrl` + `+`/`-`
 - **Design & UX**
   - Light/Dark-Theme, UI-Scale (Hauptscript)
-  - Robuste Pfadbehandlung (Windows/macOS), Datei/Ordner-Dialoge (JS-API)
-  - Persistente Settings (inkl. Fullscreen-State und HUD-Scale)
+  - Robuste Pfadbehandlung (Windows/macOS/Linux), Datei/Ordner-Dialoge (JS-API)
 
 ---
 
 ## Enthaltene Skripte
 
-- `Setlist_Manager_Regions_ImGui_Styled.lua` – **Hauptscript** (Edit/Show, Leader/Follower, schreibt `status.json`)
+- `Setlist_Manager_Regions_ImGui_Styled.lua` – **Hauptscript** (Edit/Show, schreibt `status.json`)
 - `Setlist_HUD_Status.lua` – **HUD/Uhr** (liest `status.json`, zeigt Zeiten/ETA)
 - `Start_Setlist_And_HUD.lua` *(optional)* – **Launcher**, der beide Actions startet (Action-IDs eintragen)
 
@@ -79,22 +77,21 @@ Zusätzliches, separates HUD:
 1. **Hauptscript** starten.  
 2. Menü **Settings**:
    - **Setlist folder** wählen/erstellen (Speicherort für `*.reaplaylist.txt`)
-   - **Status path (shared)** auf eine **gemeinsame** `status.json` (Netzwerkfreigabe) setzen
+   - **HUD output file** auf einen gemeinsamen Pfad (z.B. im Skript-Ordner) setzen
    - **Apply** → **Save Settings**
-3. **HUD** starten (`Setlist_HUD_Status.lua`) – liest dieselbe `status.json`.  
+3. **HUD** starten (`Setlist_HUD_Status.lua`) – liest automatisch dieselbe `status.json`.  
    Im HUD unter **Options**: *Auto-Fit to window* ein/aus, sonst Scale-Slider nutzen.
 4. *(Optional)* **Launcher**: In `Start_Setlist_And_HUD.lua` die beiden **Action-IDs** eintragen  
    (in der Action-Liste: Rechtsklick → *Copy selected action command ID*). Danach startet ein Klick beide Skripte.
 
 ---
 
-## Leader/Follower-Setup (Dateibasiert)
+## Sync & Backup-Setup
 
-- **Leader**: Rolle *Leader* aktivieren, Status-Pfad auf **gemeinsame** `status.json` setzen → Script schreibt periodisch (Index/Status/Zeit).  
-- **Follower**: Rolle *Follower* aktivieren, **denselben** `status.json`-Pfad setzen → Script liest periodisch und folgt.  
-- Hover über „Leader active / In Sync“ zeigt breiten Tooltip (Alter, Latenz, Pfad, Leader-Infos).
-
-> Kein direkter TCP-Socket – die gemeinsame Datei auf einem **erreichbaren, beschreibbaren** Share ist die Quelle der Wahrheit.
+- Den Skript-Ordner einfach über Syncthing, Dropbox oder Nextcloud auf den Zweitrechner spiegeln.
+- Die Konfiguration (Scale, Theme, Fensterstatus) bleibt dank lokaler `setlist_config.json` im jeweiligen OS-Appdata-Verzeichnis pro Laptop individuell.
+- Alle Setlists (`*.reaplaylist.txt`) und die `status.json` werden nahtlos synchronisiert, da sie im Skriptordner verbleiben.
+- Für absolutes, synchrones Live-Playback wird empfohlen, **Timecode (LTC/MTC)** vom Leader zum Follower-Rechner zu senden.
 
 ---
 
@@ -106,7 +103,7 @@ Zusätzliches, separates HUD:
 - **Save** speichert als `*.reaplaylist.txt`
 
 ### Show-Modus
-- Große Anzeige, **Prev / Play/Pause / Next**, **F** für Vollbild  
+- Große Anzeige, **Prev / Play / Stop / Next**, **F** für Vollbild  
 - UI ist **read-only** (keine unabsichtlichen Änderungen)
 
 ### HUD / Uhr
@@ -117,11 +114,10 @@ Zusätzliches, separates HUD:
 
 ## Tastenkürzel (Hauptscript)
 
-- **Space** – Play/Pause  
+- **Space** – Play/Stop (mit echtem Resume!)
 - **N** – Next  **P** – Prev  
 - **E** – Edit  **H** – Show  
 - **F** – Fullscreen (nur Show)  
-- **1** – Leader **2** – Follower  
 
 **HUD:** `Ctrl` + `+` / `-` (wenn Auto-Fit aus)
 
@@ -132,17 +128,14 @@ Zusätzliches, separates HUD:
 - **Smooth Seeking** aktivieren: `Options → Smooth seek (on bar/beat change)`  
 - **Auto-Scroll** im Arrange ggf. deaktivieren  
 - **Zweitmonitor** für Show/HUD verwenden  
-- **Netzfreigabe testen** (Rechte/Latenz), bevor es auf die Bühne geht
+- **Hardware-Controller** (z.B. Streamdeck) für Play/Stop konfigurieren.
 
 ---
 
 ## Troubleshooting
 
 - **HUD zeigt nichts / „status.json nicht gefunden“**  
-  → Pfad im **Hauptscript** & **HUD** identisch? Share erreichbar? Schreibrechte vorhanden?
-
-- **Follower hinkt hinterher**  
-  → Langsame Freigabe? Intervall ist großzügig, aber bei sehr trägen Shares hilft schnellere Ablage (lokal + Sync-Dienst).
+  → Wurde das Hauptscript gestartet? Ist der HUD output file Pfad korrekt?
 
 - **Falsche Restzeit/ETA**  
   → Region-Start/Ende prüfen, *Continue*-Flags korrekt?
@@ -151,25 +144,22 @@ Zusätzliches, separates HUD:
 
 ## Changelog
 
+### 2.4
+- **Entfernung von Leader/Follower**: Fokus auf robusten Standalone-Betrieb & Cloud-Sync
+- **Play/Stop getrennt**: Echte Resume-Funktionalität integriert
+- **Lokale Config**: `setlist_config.json` liegt OS-spezifisch ab, um individuelle UI-Scales pro Laptop zu garantieren
+- **Bugfixes**: Auto-Advance Cursor-Korrektur und Next-Button Limitierung behoben
+
 ### 2.3
-- **Persistenz erweitert**: Fullscreen-State & weitere Settings werden zuverlässig gespeichert/geladen  
-- **Pfad-Handling**: Windows/macOS-sichere Normalisierung & `path_join`, UNC-Fixes  
-- **Robustes JSON**: Flat-Encoder/Parser, sauberes Escaping (inkl. `\u002C` für Kommata)  
-- **SHOW-Modus read-only**: Buttons/Checkboxen im Show-Panel sind deaktiviert  
-- **Regionen-Ende**: Stabilere Enderkennung (`pos >= fin - EPS`)  
-- **Sync-Toleranzen**: WRITE/POLL-Intervalle & EPS für Netzfreigaben großzügiger gewählt  
-- **UX/Diagnose**: Breiter Tooltip mit sauberem Wrap; Leader/Follower-Status detaillierter  
-- **HUD-Integration**: Hauptscript schreibt zusätzlich `total_sec`, `remaining_sec`, `eta_epoch` in `status.json`  
-- **Neues HUD-Script** (`Setlist_HUD_Status.lua`): Auto-Fit, manueller Scale, Pfad-Anzeige, Theme-Follow  
-- **Starter-Script** (optional): Startet Hauptscript + HUD in einem Rutsch  
-- **Settings-Apply-Flow**: Eingabepuffer, „Apply“ übernimmt Pfade/Namen ohne Zurückspringen
+- **Persistenz erweitert**: Fullscreen-State & weitere Settings
+- **Pfad-Handling**: Windows/macOS-sichere Normalisierung & UNC-Fixes  
+- **Neues HUD-Script** (`Setlist_HUD_Status.lua`): Auto-Fit, Theme-Follow  
 
 ### 2.2
 - Fixes: Pfad-Persistenz & Windows-Root, Auto-Save  
-- Diverse Stabilitäts- und UI-Verbesserungen
 
 ### 2.1
-- Erste „Styled“-Variante mit Light/Dark, Fullscreen, Hilfe, UI-Scale, A/B-Sync-Grundlage
+- Erste „Styled“-Variante mit Light/Dark, Fullscreen, Hilfe, UI-Scale
 
 ---
 
@@ -183,7 +173,7 @@ MIT-Lizenz – freie Nutzung, Veränderung und Weitergabe erlaubt.
 
 # REAPER Live Show Setlist Controller
 
-A Lua script bundle for **REAPER** to manage live setlists, control songs (*Play, Pause, Next, Prev*), and provide a separate **HUD/clock** window showing **Total**, **Remaining**, and **ETA** (clock time).
+A Lua script bundle for **REAPER** to manage live setlists, control songs (*Play, Stop, Next, Prev*), and provide a separate **HUD/clock** window showing **Total**, **Remaining**, and **ETA** (clock time).
 
 Main script modes:
 
@@ -205,8 +195,8 @@ Optional separate HUD:
 ## Features
 
 - **Setlist management**: scan regions, add/reorder/remove, save/load `*.reaplaylist.txt`, name-based repair  
-- **Show Mode**: big display, Windowed/Fullscreen, play controls, **read-only** UI  
-- **Leader/Follower** via **file-based** sync using a shared **`status.json`**  
+- **Show Mode**: big display, Windowed/Fullscreen, play controls with precise resume, **read-only** UI  
+- **Cloud-Ready Sync**: Local UI configs per machine, while setlists and status files sync perfectly via Syncthing/Dropbox.
 - **HUD/Clock**: Auto-Fit to window, manual scale, theme-aware, shows path  
 - **Polished UX**: Light/Dark theme, UI scale, robust cross-platform paths, persistent settings
 
@@ -231,7 +221,7 @@ Optional: **SWS Extension**, **JS_ReaScript API**
 
 ## Setup (Quick)
 
-1. Run the **main script** → **Settings**: set **Setlist folder** and shared **Status path** → **Apply** / **Save**  
+1. Run the **main script** → **Settings**: set **Setlist folder** and **HUD output file** → **Apply** / **Save**  
 2. Run the **HUD** (reads the same `status.json`) → Auto-Fit or manual scale  
 3. *(Optional)* Use the **Launcher** to start both with one click
 
@@ -239,14 +229,14 @@ Optional: **SWS Extension**, **JS_ReaScript API**
 
 ## Hotkeys (main script)
 
-Space = Play/Pause • N = Next • P = Prev • E = Edit • H = Show • F = Fullscreen (Show) • 1 = Leader • 2 = Follower  
+Space = Play/Stop • N = Next • P = Prev • E = Edit • H = Show • F = Fullscreen (Show) 
 **HUD:** `Ctrl` + `+` / `-` (if Auto-Fit is off)
 
 ---
 
 ## Changelog
 
-See the German section above for detailed changes.
+See the German section above for detailed changes up to v2.4.
 
 ---
 

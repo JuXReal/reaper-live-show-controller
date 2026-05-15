@@ -108,12 +108,6 @@ local function poll()
     last_ok=false 
   end
 end
-  last_poll = t
-  local s = readf(PATH_STATUS)
-  if not s then last_ok=false; return end
-  local tot, rem, eta = parse_fields(s)
-  if tot then total_sec, remaining_sec, eta_epoch = tot, rem, eta; last_ok=true else last_ok=false end
-end
 
 -- Auto-Fit: skaliert Text an Fenstergröße (Breite + Höhe)
 local function auto_fit_scale(label_w, value_w, base_line_h, lines)
@@ -251,8 +245,6 @@ local function main()
       reaper.ImGui_Text(ctx, "Verbleibende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v2)
       reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v3)
       reaper.ImGui_Text(ctx, "Up Next:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v4)
-    ende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, fmt_mmss(remaining_sec or 0))
-      reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, os.date("%H:%M", (eta_epoch or os.time())))
     end
 
     reaper.ImGui_Separator(ctx)

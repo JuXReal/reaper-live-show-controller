@@ -9,15 +9,23 @@ if not reaper or not reaper.ImGui_CreateContext then
   return
 end
 
-local APP = "Setlist HUD v2.4"
+local APP = "Setlist HUD v2.5"
 local ctx = reaper.ImGui_CreateContext(APP)
 
 -- Persistenz
 local HUD_NS = "SetlistHUD"
 local HUD_SCALE = tonumber(reaper.GetExtState(HUD_NS, "scale") or "") or 2.6
 local HUD_AUTOFIT = (reaper.GetExtState(HUD_NS, "autofit") == "1")
+local HUD_FULLSCREEN = (reaper.GetExtState(HUD_NS, "fullscreen") == "1")
 local function save_scale()  reaper.SetExtState(HUD_NS, "scale",   tostring(HUD_SCALE),  true) end
 local function save_autofit()reaper.SetExtState(HUD_NS, "autofit", HUD_AUTOFIT and "1" or "0", true) end
+local function save_fullscreen()reaper.SetExtState(HUD_NS, "fullscreen", HUD_FULLSCREEN and "1" or "0", true) end
+
+local function display_size()
+  if reaper.ImGui_GetDisplaySize then local w,h=reaper.ImGui_GetDisplaySize(ctx) return w,h end
+  if reaper.ImGui_GetIO then local io=reaper.ImGui_GetIO(ctx) return io.DisplaySize_x, io.DisplaySize_y end
+  return 1280,720
+end
 
 -- Theme & Pfad aus Hauptscript-Settings
 local function read_main_config()
@@ -71,11 +79,16 @@ local function parse_fields(s)
     n_name = n_name:gsub('\\u002C', ','):gsub('\\r','\r'):gsub('\\n','\n'):gsub('\\t','\t'):gsub('\\"', '"'):gsub('\\\\','\\')
   end
   
+  local c_name = s:match('%"region_name"%s*:%s*%"([^%"]*)%"') or ""
+  if c_name ~= "" then
+    c_name = c_name:gsub('\\u002C', ','):gsub('\\r','\r'):gsub('\\n','\n'):gsub('\\t','\t'):gsub('\\"', '"'):gsub('\\\\','\\')
+  end
+  
   local c_flag = s:match('%"continue_flag"%s*:%s*(true)') ~= nil
   local status_str = s:match('%"status"%s*:%s*%"([^%"]*)%"')
   local i_stop = (status_str == "stop")
 
-  if tot and rem and eta then return tot, rem, eta, n_name, c_flag, i_stop end
+  if tot and rem and eta then return tot, rem, eta, n_name, c_name, c_flag, i_stop end
   return nil
 end
 local function fmt_mmss(sec)
@@ -86,8 +99,10 @@ end
 
 -- State
 local POLL_IVL, last_poll = 0.25, 0
+local TIMEOUT, last_ok_time = 3.0, reaper.time_precise()
 local total_sec, remaining_sec, eta_epoch = 0, 0, os.time()
 local next_region_name = ""
+local current_region_name = ""
 local continue_flag = true
 local is_stopped = false
 local last_ok, show_settings = false, false
@@ -95,17 +110,22 @@ local last_ok, show_settings = false, false
 local function poll()
   local t = reaper.time_precise(); if (t - last_poll) < POLL_IVL then return end
   last_poll = t
-  local s = readf(PATH_STATUS)
-  if not s then last_ok=false; return end
-  local tot, rem, eta, n_name, c_flag, i_stop = parse_fields(s)
-  if tot then 
+  local ok, s = pcall(readf, PATH_STATUS)
+  if not ok or not s then 
+    if (t - last_ok_time) > TIMEOUT then last_ok = false end
+    return 
+  end
+  local p_ok, tot, rem, eta, n_name, c_name, c_flag, i_stop = pcall(parse_fields, s)
+  if p_ok and tot then 
     total_sec, remaining_sec, eta_epoch = tot, rem, eta
     next_region_name = n_name
+    current_region_name = c_name
     continue_flag = c_flag
     is_stopped = i_stop
-    last_ok=true 
+    last_ok = true 
+    last_ok_time = t
   else 
-    last_ok=false 
+    if (t - last_ok_time) > TIMEOUT then last_ok = false end
   end
 end
 
@@ -150,14 +170,23 @@ local function draw_settings_popup()
   end
 end
 
-local function main()
+local function run_main_logic()
   apply_theme()
   poll()
 
   -- großes Startfenster
-  reaper.ImGui_SetNextWindowSize(ctx, 900, 300, reaper.ImGui_Cond_FirstUseEver())
   local flags = (reaper.ImGui_WindowFlags_MenuBar and reaper.ImGui_WindowFlags_MenuBar() or 0)
               | reaper.ImGui_WindowFlags_NoSavedSettings()
+
+  if HUD_FULLSCREEN then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, 0, 0, reaper.ImGui_Cond_Always())
+    reaper.ImGui_SetNextWindowSize(ctx, w, h, reaper.ImGui_Cond_Always())
+    flags = flags | reaper.ImGui_WindowFlags_NoDecoration() | reaper.ImGui_WindowFlags_NoMove() | reaper.ImGui_WindowFlags_NoResize()
+  else
+    reaper.ImGui_SetNextWindowSize(ctx, 900, 300, reaper.ImGui_Cond_FirstUseEver())
+  end
+
   local visible, open = reaper.ImGui_Begin(ctx, APP, true, flags)
   if visible then
     -- Menü
@@ -170,6 +199,9 @@ local function main()
         if toggled then theme = isLight and "Light" or "Dark" end
 
         reaper.ImGui_Separator(ctx)
+        local _, newFs = reaper.ImGui_MenuItem(ctx, "Fullscreen (F)", "F", HUD_FULLSCREEN)
+        if newFs ~= HUD_FULLSCREEN then HUD_FULLSCREEN = newFs; save_fullscreen() end
+
         local _, newAutofit = reaper.ImGui_MenuItem(ctx, "Auto-Fit to window", nil, HUD_AUTOFIT)
         if newAutofit ~= HUD_AUTOFIT then HUD_AUTOFIT = newAutofit; save_autofit() end
 
@@ -199,52 +231,110 @@ local function main()
       v4 = "⏩ " .. v4
     end
 
-    -- ===== Auto-Fit berechnen =====
-    local scale = HUD_SCALE
-    if HUD_AUTOFIT and reaper.ImGui_SetWindowFontScale and reaper.ImGui_CalcTextSize then
-      -- 1) Messung in Scale 1.0
-      reaper.ImGui_SetWindowFontScale(ctx, 1.0)
-      local l1, l2, l3, l4 = "Gesamtspielzeit Set:", "Verbleibende Spielzeit Set:", "ETA Endzeit:", "Up Next:"
-      local lw1 = select(1, reaper.ImGui_CalcTextSize(ctx, l1))
-      local lw2 = select(1, reaper.ImGui_CalcTextSize(ctx, l2))
-      local lw3 = select(1, reaper.ImGui_CalcTextSize(ctx, l3))
-      local lw4 = select(1, reaper.ImGui_CalcTextSize(ctx, l4))
-      local vw1 = select(1, reaper.ImGui_CalcTextSize(ctx, v1))
-      local vw2 = select(1, reaper.ImGui_CalcTextSize(ctx, v2))
-      local vw3 = select(1, reaper.ImGui_CalcTextSize(ctx, v3))
-      local vw4 = select(1, reaper.ImGui_CalcTextSize(ctx, v4))
-      local label_w = math.max(lw1, math.max(lw2, math.max(lw3, lw4)))
-      local value_w = math.max(vw1, math.max(vw2, math.max(vw3, vw4)))
-      local line_h  = select(2, reaper.ImGui_CalcTextSize(ctx, "A")) + 6
+    -- ===== Anzeige-Modus =====
+    if HUD_FULLSCREEN then
+      local c_song = (current_region_name ~= "") and current_region_name or "---"
+      local n_song = (next_region_name ~= "") and next_region_name or "---"
+      if not continue_flag then n_song = "🛑 STOPS AFTER CURRENT" else n_song = "⏩ " .. n_song end
+      local eta_str = os.date("%H:%M", (eta_epoch or os.time()))
+      
+      local scale = HUD_SCALE
+      if HUD_AUTOFIT and reaper.ImGui_SetWindowFontScale and reaper.ImGui_CalcTextSize then
+        reaper.ImGui_SetWindowFontScale(ctx, 1.0)
+        local l1, l2, l3 = "NOW:", "NEXT:", "ETA:"
+        local lw = math.max(select(1, reaper.ImGui_CalcTextSize(ctx, l1)), select(1, reaper.ImGui_CalcTextSize(ctx, l2)), select(1, reaper.ImGui_CalcTextSize(ctx, l3)))
+        local vw = math.max(select(1, reaper.ImGui_CalcTextSize(ctx, c_song)), select(1, reaper.ImGui_CalcTextSize(ctx, n_song)), select(1, reaper.ImGui_CalcTextSize(ctx, eta_str)))
+        local line_h = select(2, reaper.ImGui_CalcTextSize(ctx, "A")) + 20
+        scale = auto_fit_scale(lw, vw, line_h, 3)
+        reaper.ImGui_SetWindowFontScale(ctx, scale)
+        
+        -- Centering Y
+        local avail_y = select(2, reaper.ImGui_GetContentRegionAvail(ctx))
+        local content_h = line_h * 3 * scale
+        if avail_y > content_h then
+          reaper.ImGui_Dummy(ctx, 1, (avail_y - content_h) * 0.4)
+        end
 
-      scale = auto_fit_scale(label_w, value_w, line_h, 4)
-      -- 2) Scale setzen
-      reaper.ImGui_SetWindowFontScale(ctx, scale)
-    else
-      -- manueller Scale
-      if reaper.ImGui_SetWindowFontScale then reaper.ImGui_SetWindowFontScale(ctx, scale) end
-    end
+        if reaper.ImGui_BeginTable and reaper.ImGui_BeginTable(ctx, "fs_tbl", 2) then
+          reaper.ImGui_TableSetupColumn(ctx, "L", reaper.ImGui_TableColumnFlags_WidthFixed(), lw * scale + 40)
+          reaper.ImGui_TableSetupColumn(ctx, "R")
+          
+          reaper.ImGui_TableNextRow(ctx)
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, "NOW:")
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, c_song)
+          
+          reaper.ImGui_TableNextRow(ctx)
+          reaper.ImGui_Dummy(ctx, 1, 20 * scale)
 
-    -- ===== Anzeige =====
-    if reaper.ImGui_BeginTable and reaper.ImGui_BeginTable(ctx, "hudtbl", 2) then
-      reaper.ImGui_TableSetupColumn(ctx, "L", reaper.ImGui_TableColumnFlags_WidthFixed(), 320)
-      reaper.ImGui_TableSetupColumn(ctx, "R")
-      local function row(label, value)
-        reaper.ImGui_TableNextRow(ctx)
-        reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, label)
-        reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, value)
+          reaper.ImGui_TableNextRow(ctx)
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextDisabled(ctx, "NEXT:")
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, n_song)
+          
+          reaper.ImGui_TableNextRow(ctx)
+          reaper.ImGui_Dummy(ctx, 1, 20 * scale)
+
+          reaper.ImGui_TableNextRow(ctx)
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextDisabled(ctx, "ETA:")
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, eta_str)
+          
+          reaper.ImGui_EndTable(ctx)
+        end
+      else
+        if reaper.ImGui_SetWindowFontScale then reaper.ImGui_SetWindowFontScale(ctx, scale) end
+        reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, "NOW:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, c_song)
+        reaper.ImGui_Dummy(ctx, 1, 20)
+        reaper.ImGui_TextDisabled(ctx, "NEXT:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, n_song)
+        reaper.ImGui_Dummy(ctx, 1, 20)
+        reaper.ImGui_TextDisabled(ctx, "ETA:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, eta_str)
       end
-      row("Gesamtspielzeit Set:", v1)
-      row("Verbleibende Spielzeit Set:", v2)
-      row("ETA Endzeit:", v3)
-      row("Up Next:", v4)
-      reaper.ImGui_EndTable(ctx)
     else
-      -- Fallback ohne Table
-      reaper.ImGui_Text(ctx, "Gesamtspielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v1)
-      reaper.ImGui_Text(ctx, "Verbleibende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v2)
-      reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v3)
-      reaper.ImGui_Text(ctx, "Up Next:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v4)
+      -- ===== Auto-Fit berechnen (Normaler Modus) =====
+      local scale = HUD_SCALE
+      if HUD_AUTOFIT and reaper.ImGui_SetWindowFontScale and reaper.ImGui_CalcTextSize then
+        -- 1) Messung in Scale 1.0
+        reaper.ImGui_SetWindowFontScale(ctx, 1.0)
+        local l1, l2, l3, l4 = "Gesamtspielzeit Set:", "Verbleibende Spielzeit Set:", "ETA Endzeit:", "Up Next:"
+        local lw1 = select(1, reaper.ImGui_CalcTextSize(ctx, l1))
+        local lw2 = select(1, reaper.ImGui_CalcTextSize(ctx, l2))
+        local lw3 = select(1, reaper.ImGui_CalcTextSize(ctx, l3))
+        local lw4 = select(1, reaper.ImGui_CalcTextSize(ctx, l4))
+        local vw1 = select(1, reaper.ImGui_CalcTextSize(ctx, v1))
+        local vw2 = select(1, reaper.ImGui_CalcTextSize(ctx, v2))
+        local vw3 = select(1, reaper.ImGui_CalcTextSize(ctx, v3))
+        local vw4 = select(1, reaper.ImGui_CalcTextSize(ctx, v4))
+        local label_w = math.max(lw1, math.max(lw2, math.max(lw3, lw4)))
+        local value_w = math.max(vw1, math.max(vw2, math.max(vw3, vw4)))
+        local line_h  = select(2, reaper.ImGui_CalcTextSize(ctx, "A")) + 6
+
+        scale = auto_fit_scale(label_w, value_w, line_h, 4)
+        -- 2) Scale setzen
+        reaper.ImGui_SetWindowFontScale(ctx, scale)
+      else
+        -- manueller Scale
+        if reaper.ImGui_SetWindowFontScale then reaper.ImGui_SetWindowFontScale(ctx, scale) end
+      end
+
+      -- ===== Anzeige =====
+      if reaper.ImGui_BeginTable and reaper.ImGui_BeginTable(ctx, "hudtbl", 2) then
+        reaper.ImGui_TableSetupColumn(ctx, "L", reaper.ImGui_TableColumnFlags_WidthFixed(), 320)
+        reaper.ImGui_TableSetupColumn(ctx, "R")
+        local function row(label, value)
+          reaper.ImGui_TableNextRow(ctx)
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, label)
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, value)
+        end
+        row("Gesamtspielzeit Set:", v1)
+        row("Verbleibende Spielzeit Set:", v2)
+        row("ETA Endzeit:", v3)
+        row("Up Next:", v4)
+        reaper.ImGui_EndTable(ctx)
+      else
+        -- Fallback ohne Table
+        reaper.ImGui_Text(ctx, "Gesamtspielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v1)
+        reaper.ImGui_Text(ctx, "Verbleibende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v2)
+        reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v3)
+        reaper.ImGui_Text(ctx, "Up Next:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v4)
+      end
     end
 
     reaper.ImGui_Separator(ctx)
@@ -260,6 +350,13 @@ local function main()
     reaper.ImGui_End(ctx)
   end
 
+  -- Hotkeys
+  if reaper.ImGui_IsKeyDown and reaper.ImGui_IsKeyDown(ctx, reaper.ImGui_Mod_None and reaper.ImGui_Mod_None() or 0) then
+    if reaper.ImGui_IsKeyPressed and reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_F and reaper.ImGui_Key_F() or 0) then
+      HUD_FULLSCREEN = not HUD_FULLSCREEN; save_fullscreen()
+    end
+  end
+
   -- Hotkeys für manuellen Modus
   if not HUD_AUTOFIT and reaper.ImGui_IsKeyDown and reaper.ImGui_IsKeyDown(ctx, reaper.ImGui_Mod_Ctrl and reaper.ImGui_Mod_Ctrl() or 0) then
     if reaper.ImGui_IsKeyPressed and reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Equal and reaper.ImGui_Key_Equal() or 0) then
@@ -269,6 +366,15 @@ local function main()
     end
   end
 
+  return open
+end
+
+local function main()
+  local ok, open = pcall(run_main_logic)
+  if not ok then
+    reaper.ShowConsoleMsg("Setlist HUD Error: " .. tostring(open) .. "\n")
+    open = true -- keep deferring to keep window alive if possible
+  end
   if open then reaper.defer(main) end
 end
 

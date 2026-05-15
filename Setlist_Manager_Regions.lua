@@ -86,13 +86,20 @@ local function is_windows() return reaper.GetOS():match("Win") ~= nil end
 local function path_sep() return is_windows() and "\\" or "/" end
 local function normalize_path(p)
   if not p or p=="" then return "" end
-  if p == "/" then return "/" end
+  -- Unify slashes based on OS
+  if is_windows() then
+    p = p:gsub("/", "\\")
+  else
+    p = p:gsub("\\", "/")
+  end
+  
+  if p == "/" or p == "\\" then return p end
   if p:match("^%a:[/\\]$") then return p end -- "C:\" bzw. "C:/"
   -- UNC \\server\share
   if p:match("^[/\\][/\\][^/\\]+[/\\][^/\\]+[/\\]?$") then
     return (p:gsub("[/\\]+$", ""))
   end
-  -- Normal: trailing Slashes entfernen, Slashes normalisieren nicht übertreiben
+  -- Normal: trailing Slashes entfernen
   return (p:gsub("[/\\]+$", ""))
 end
 local function path_join(a,b)
@@ -489,16 +496,16 @@ local function play_entry(e)
   local playing = select(1, get_play_state())
   local pos = reaper.GetCursorPosition()
   if pos > r.start and pos < (r.fin - TIME_EPS) then
-    if not playing then reaper.CSurf_OnPlay() end
+    if not playing then reaper.OnPlayButton() end
   else
-    reaper.SetEditCurPos(r.start, true, true)
-    if not playing then reaper.CSurf_OnPlay() end
+    reaper.SetEditCurPos(r.start, true, false)
+    if not playing then reaper.OnPlayButton() end
   end
   is_playing = true
 end
 
 local function stop_play()
-  reaper.CSurf_OnStop()
+  reaper.OnStopButton()
   is_playing = false
 end
 
@@ -589,6 +596,7 @@ local function status_write()
   local tmp_path = PATH_STATUS .. ".tmp"
   local ok, data = pcall(status_build)
   if ok and writef(tmp_path, json_of(data)) then
+    if is_windows() then os.remove(PATH_STATUS) end
     pcall(os.rename, tmp_path, PATH_STATUS)
   end
 end
@@ -984,6 +992,62 @@ local function draw_help_popups()
       "Bitte vor dem Einsatz live ausführlich testen, um unerwartetes Verhalten zu vermeiden.")
     reaper.ImGui_Separator(ctx)
     if reaper.ImGui_Button(ctx, "OK") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
+
+  if show_help_quick then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(560*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "Quick Start")
+    show_help_quick = false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "Quick Start", true) then
+    reaper.ImGui_TextWrapped(ctx, "1. Setlist-Ordner wählen (Settings -> Setlist folder)\n2. Regions anlegen (Reload Regions)\n3. Regions in Setlist einfügen (Add)\n4. SHOW-Modus aktivieren für sichere Bedienung")
+    reaper.ImGui_Separator(ctx)
+    if reaper.ImGui_Button(ctx, "OK##quick") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
+
+  if show_help_keys then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(560*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "Shortcuts")
+    show_help_keys = false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "Shortcuts", true) then
+    reaper.ImGui_TextWrapped(ctx, "Leertaste: Play/Stop\nN: Nächster Song\nP: Vorheriger Song\nE: EDIT Modus\nH: SHOW Modus\nF: Fullscreen (nur im SHOW Modus)")
+    reaper.ImGui_Separator(ctx)
+    if reaper.ImGui_Button(ctx, "OK##keys") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
+
+  if show_help_about then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(560*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "About & Support")
+    show_help_about = false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "About & Support", true) then
+    reaper.ImGui_TextWrapped(ctx, "Setlist Manager (Regions) Styled\nVersion " .. VER .. "\n\nEin Script zur Steuerung von REAPER in Live-Situationen.")
+    reaper.ImGui_Separator(ctx)
+    if reaper.ImGui_Button(ctx, "OK##about") then reaper.ImGui_CloseCurrentPopup(ctx) end
+    reaper.ImGui_EndPopup(ctx)
+  end
+
+  if show_help_diag then
+    local w,h = display_size()
+    reaper.ImGui_SetNextWindowPos(ctx, w*0.5, h*0.5, reaper.ImGui_Cond_Appearing(), 0.5, 0.5)
+    reaper.ImGui_SetNextWindowSize(ctx, math.floor(560*UI_SCALE), 0, reaper.ImGui_Cond_Appearing())
+    reaper.ImGui_OpenPopup(ctx, "Diagnostics")
+    show_help_diag = false
+  end
+  if reaper.ImGui_BeginPopupModal(ctx, "Diagnostics", true) then
+    reaper.ImGui_TextWrapped(ctx, "Current Mode: " .. mode .. "\nStatus File: " .. PATH_STATUS .. "\nRegions Count: " .. tostring(#regions) .. "\nSetlist Entries: " .. tostring(#setlist.entries))
+    reaper.ImGui_Separator(ctx)
+    if reaper.ImGui_Button(ctx, "OK##diag") then reaper.ImGui_CloseCurrentPopup(ctx) end
     reaper.ImGui_EndPopup(ctx)
   end
 end

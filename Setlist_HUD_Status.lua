@@ -20,13 +20,24 @@ local function save_scale()  reaper.SetExtState(HUD_NS, "scale",   tostring(HUD_
 local function save_autofit()reaper.SetExtState(HUD_NS, "autofit", HUD_AUTOFIT and "1" or "0", true) end
 
 -- Theme & Pfad aus Hauptscript-Settings
-local EXT_NS, SETTINGS_KEY = "SetlistMgrStyled", "SETTINGS_V2"
-local RAW = reaper.GetExtState(EXT_NS, SETTINGS_KEY) or ""
+local function read_main_config()
+  local p = reaper.GetResourcePath() .. "/setlist_config.json"
+  local f = io.open(p, "rb")
+  if not f then return "" end
+  local c = f:read("*a")
+  f:close()
+  return c
+end
+
+local RAW = read_main_config()
 local theme = (RAW:match('%"theme"%s*:%s*%"(.-)%"') == "Light") and "Light" or "Dark"
 local PATH_STATUS = (function()
   local p = RAW:match('%"path_status"%s*:%s*%"(.-)%"')
   if p and p ~= "" then return (p:gsub('\\u002C', ','):gsub('\\"','"'):gsub('\\\\','\\')) end
-  return reaper.GetResourcePath() .. "/Setlists/status.json"
+  
+  local _, _script_path = reaper.get_action_context()
+  local SCRIPT_DIR = (_script_path and _script_path:match("^(.*)[/\\\\]")) or reaper.GetResourcePath()
+  return SCRIPT_DIR .. "/status.json"
 end)()
 
 -- Theme anwenden (kompatibel alt/neu)

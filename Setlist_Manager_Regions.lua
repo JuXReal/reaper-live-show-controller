@@ -17,7 +17,7 @@ if not reaper or not reaper.ImGui_CreateContext then
 end
 
 local APP = "Setlist Manager (Regions) – Styled"
-local VER = "2.4"  -- Version 2.4 (Play/Stop getrennt, Config-File)
+local VER = "2.5"  -- Version 2.5 (Fail-safes, pcall, atomic writes)
 
 -- Persistenz-Namespace für Settings
 local EXT_NS = "SetlistMgrStyled"
@@ -45,6 +45,7 @@ local fullscreen = false
 local last_write = 0
 local is_playing = false
 local prev_mode = mode
+local last_play_pos = 0
 
 local regions = {}
 local setlist = { name = "My Set", entries = {} }
@@ -539,6 +540,15 @@ local function status_build()
   local playing, paused = get_play_state()
   local r = e and (R(e.region_idx) or R_by_name(e.name))
 
+  local next_e = setlist.entries[current + 1]
+  local next_name = ""
+  if next_e then
+    local next_r = R(next_e.region_idx) or R_by_name(next_e.name)
+    next_name = (next_r and next_r.name) or next_e.name or ""
+  end
+
+  local continue_flag = (e and e.continue ~= false)
+
   -- Total / elapsed / remaining
   local total, elapsed = 0, 0
   local pos = reaper.GetPlayPosition() or 0
@@ -562,6 +572,7 @@ local function status_build()
     set=setlist.name or "", index=current, total=#setlist.entries,
     playing=playing, paused=paused,
     region_name=r and r.name or "", region_idx=r and r.idx or -1,
+    next_region_name=next_name, continue_flag=continue_flag,
     status=(playing and "play") or (paused and "pause") or "stop",
     ts=now(),
     playpos = pos,
@@ -575,7 +586,11 @@ end
 
 local function status_write()
   local t=now(); if t-last_write<WRITE_IVL then return end; last_write=t
-  writef(PATH_STATUS, json_of(status_build()))
+  local tmp_path = PATH_STATUS .. ".tmp"
+  local ok, data = pcall(status_build)
+  if ok and writef(tmp_path, json_of(data)) then
+    pcall(os.rename, tmp_path, PATH_STATUS)
+  end
 end
 
 -- Stabilere End-Erkennung + Continue-Logik
@@ -586,7 +601,8 @@ local function engine()
     local r = R(e.region_idx) or R_by_name(e.name)
     if r then
       local pos = reaper.GetPlayPosition() or 0
-      if pos >= (r.fin - TIME_EPS) and pos <= (r.fin + 1.0) then
+      -- Lag-resistenter Check: Grenzübergang erkannt
+      if last_play_pos < (r.fin - TIME_EPS) and pos >= (r.fin - TIME_EPS) and pos <= (r.fin + 2.0) then
         if e.continue ~= false then
           -- Continue EIN: direkt den nächsten Eintrag starten (falls vorhanden)
           if current < #setlist.entries then
@@ -1007,7 +1023,7 @@ end
 -- KAPITEL 10 — MAIN LOOP
 -- ============================================================
 
-local function main()
+local function run_main_logic()
   local playing,_ = get_play_state()
   is_playing = playing
 
@@ -1197,8 +1213,25 @@ local function main()
   engine()
   status_write()
   
-
   if settings_dirty then save_settings(false) end
+  return open, playing
+end
+
+local function main()
+  local ok, open, playing = pcall(run_main_logic)
+  if not ok then
+    reaper.ShowConsoleMsg("Setlist Manager Error: " .. tostring(open) .. "\n")
+    open = true -- Keep running even if error happened
+    playing = select(1, get_play_state())
+  end
+
+  if playing then
+    last_play_pos = reaper.GetPlayPosition() or 0
+  else
+    last_play_pos = (reaper.GetCursorPosition and reaper.GetCursorPosition()) or 0
+  end
+
+  if not open then return end
   reaper.defer(main)
 end
 

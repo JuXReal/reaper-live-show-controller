@@ -350,15 +350,19 @@ local function run_main_logic()
     reaper.ImGui_End(ctx)
   end
 
+  local mods = reaper.ImGui_GetKeyMods and reaper.ImGui_GetKeyMods(ctx) or 0
+  local mod_none = reaper.ImGui_Mod_None and reaper.ImGui_Mod_None() or 0
+  local mod_ctrl = reaper.ImGui_Mod_Ctrl and reaper.ImGui_Mod_Ctrl() or 0
+
   -- Hotkeys
-  if reaper.ImGui_IsKeyDown and reaper.ImGui_IsKeyDown(ctx, reaper.ImGui_Mod_None and reaper.ImGui_Mod_None() or 0) then
+  if mods == mod_none then
     if reaper.ImGui_IsKeyPressed and reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_F and reaper.ImGui_Key_F() or 0) then
       HUD_FULLSCREEN = not HUD_FULLSCREEN; save_fullscreen()
     end
   end
 
   -- Hotkeys für manuellen Modus
-  if not HUD_AUTOFIT and reaper.ImGui_IsKeyDown and reaper.ImGui_IsKeyDown(ctx, reaper.ImGui_Mod_Ctrl and reaper.ImGui_Mod_Ctrl() or 0) then
+  if not HUD_AUTOFIT and mods == mod_ctrl then
     if reaper.ImGui_IsKeyPressed and reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Equal and reaper.ImGui_Key_Equal() or 0) then
       HUD_SCALE = math.min(4.0, (HUD_SCALE or 2.6) + 0.1); save_scale()
     elseif reaper.ImGui_IsKeyPressed and reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Minus and reaper.ImGui_Key_Minus() or 0) then

@@ -63,7 +63,13 @@ end
 
 local function pretty_path(p)
   if not p or p=="" then return "" end
-  return (p:gsub("\\+", "\\"):gsub("/+", "/"))
+  -- Convert all forward slashes to backslashes for a cleaner display on Windows
+  local s = p:gsub("/", "\\")
+  -- Remove duplicate slashes (except for UNC paths at the start)
+  local is_unc = s:match("^\\\\")
+  s = s:gsub("\\+", "\\")
+  if is_unc then s = "\\" .. s end
+  return s
 end
 
 -- I/O + Parsing
@@ -293,20 +299,31 @@ local function run_main_logic()
       if HUD_AUTOFIT and reaper.ImGui_SetWindowFontScale and reaper.ImGui_CalcTextSize then
         -- 1) Messung in Scale 1.0
         reaper.ImGui_SetWindowFontScale(ctx, 1.0)
-        local l1, l2, l3, l4 = "Gesamtspielzeit Set:", "Verbleibende Spielzeit Set:", "ETA Endzeit:", "Up Next:"
+        local l1, l2, l3 = "Gesamtspielzeit Set:", "Verbleibende Spielzeit Set:", "ETA Endzeit:"
         local lw1 = select(1, reaper.ImGui_CalcTextSize(ctx, l1))
         local lw2 = select(1, reaper.ImGui_CalcTextSize(ctx, l2))
         local lw3 = select(1, reaper.ImGui_CalcTextSize(ctx, l3))
-        local lw4 = select(1, reaper.ImGui_CalcTextSize(ctx, l4))
+        
         local vw1 = select(1, reaper.ImGui_CalcTextSize(ctx, v1))
         local vw2 = select(1, reaper.ImGui_CalcTextSize(ctx, v2))
         local vw3 = select(1, reaper.ImGui_CalcTextSize(ctx, v3))
-        local vw4 = select(1, reaper.ImGui_CalcTextSize(ctx, v4))
-        local label_w = math.max(lw1, math.max(lw2, math.max(lw3, lw4)))
-        local value_w = math.max(vw1, math.max(vw2, math.max(vw3, vw4)))
-        local line_h  = select(2, reaper.ImGui_CalcTextSize(ctx, "A")) + 6
+        
+        local lw4 = select(1, reaper.ImGui_CalcTextSize(ctx, "UP NEXT:")) * 1.5
+        local vw4 = select(1, reaper.ImGui_CalcTextSize(ctx, v4)) * 1.5
 
-        scale = auto_fit_scale(label_w, value_w, line_h, 4)
+        local label_w = math.max(lw1, math.max(lw2, lw3))
+        local value_w = math.max(vw1, math.max(vw2, vw3))
+        
+        local total_need_w = math.max(label_w + value_w + 40, lw4, vw4)
+        local line_h  = select(2, reaper.ImGui_CalcTextSize(ctx, "A")) + 6
+        local need_h = (line_h * 3) + (line_h * 1.5 * 2) + 60
+        
+        local win_w, win_h = reaper.ImGui_GetWindowSize(ctx)
+        local f_w = (win_w - 48) / math.max(1, total_need_w)
+        local f_h = (win_h - 80) / math.max(1, need_h)
+        scale = math.max(1.0, math.min(f_w, f_h))
+        scale = math.min(scale, 5.0)
+
         -- 2) Scale setzen
         reaper.ImGui_SetWindowFontScale(ctx, scale)
       else
@@ -316,7 +333,7 @@ local function run_main_logic()
 
       -- ===== Anzeige =====
       if reaper.ImGui_BeginTable and reaper.ImGui_BeginTable(ctx, "hudtbl", 2) then
-        reaper.ImGui_TableSetupColumn(ctx, "L", reaper.ImGui_TableColumnFlags_WidthFixed(), 320)
+        reaper.ImGui_TableSetupColumn(ctx, "L")
         reaper.ImGui_TableSetupColumn(ctx, "R")
         local function row(label, value)
           reaper.ImGui_TableNextRow(ctx)
@@ -326,15 +343,22 @@ local function run_main_logic()
         row("Gesamtspielzeit Set:", v1)
         row("Verbleibende Spielzeit Set:", v2)
         row("ETA Endzeit:", v3)
-        row("Up Next:", v4)
         reaper.ImGui_EndTable(ctx)
       else
         -- Fallback ohne Table
         reaper.ImGui_Text(ctx, "Gesamtspielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v1)
         reaper.ImGui_Text(ctx, "Verbleibende Spielzeit Set:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v2)
         reaper.ImGui_Text(ctx, "ETA Endzeit:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v3)
-        reaper.ImGui_Text(ctx, "Up Next:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, v4)
       end
+      
+      reaper.ImGui_Dummy(ctx, 1, 15 * scale)
+      reaper.ImGui_Separator(ctx)
+      reaper.ImGui_Dummy(ctx, 1, 10 * scale)
+      
+      if reaper.ImGui_SetWindowFontScale then reaper.ImGui_SetWindowFontScale(ctx, scale * 1.5) end
+      reaper.ImGui_TextDisabled(ctx, "UP NEXT:")
+      reaper.ImGui_TextColored(ctx, 0xFFAA00FF, v4)
+      if reaper.ImGui_SetWindowFontScale then reaper.ImGui_SetWindowFontScale(ctx, scale) end
     end
 
     reaper.ImGui_Separator(ctx)
@@ -378,6 +402,8 @@ local function main()
   if not ok then
     reaper.ShowConsoleMsg("Setlist HUD Error: " .. tostring(open) .. "\n")
     open = true -- keep deferring to keep window alive if possible
+    -- Ensure ImGui context isn't left open after a crash inside Begin()
+    if reaper.ImGui_End then pcall(reaper.ImGui_End, ctx) end
   end
   if open then reaper.defer(main) end
 end

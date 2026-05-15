@@ -17,7 +17,7 @@ if not reaper or not reaper.ImGui_CreateContext then
 end
 
 local APP = "Setlist Manager (Regions) – Styled"
-local VER = "2.3"  -- ↑ Version angehoben
+local VER = "2.4"  -- Version 2.4 (Play/Stop getrennt, Config-File)
 
 -- Persistenz-Namespace für Settings
 local EXT_NS = "SetlistMgrStyled"

@@ -260,8 +260,8 @@ local function run_main_logic()
           reaper.ImGui_TableSetupColumn(ctx, "R")
           
           reaper.ImGui_TableNextRow(ctx)
-          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, "NOW:")
-          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, c_song)
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextColored(ctx, 0x66FF66FF, "NOW:")
+          reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_TextColored(ctx, 0x66FF66FF, c_song)
           
           reaper.ImGui_TableNextRow(ctx)
           reaper.ImGui_Dummy(ctx, 1, 20 * scale)
@@ -281,7 +281,7 @@ local function run_main_logic()
         end
       else
         if reaper.ImGui_SetWindowFontScale then reaper.ImGui_SetWindowFontScale(ctx, scale) end
-        reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, "NOW:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_TextColored(ctx, 0.5, 1.0, 0.5, 1.0, c_song)
+        reaper.ImGui_TextColored(ctx, 0x66FF66FF, "NOW:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_TextColored(ctx, 0x66FF66FF, c_song)
         reaper.ImGui_Dummy(ctx, 1, 20)
         reaper.ImGui_TextDisabled(ctx, "NEXT:"); reaper.ImGui_SameLine(ctx, 0, 16); reaper.ImGui_Text(ctx, n_song)
         reaper.ImGui_Dummy(ctx, 1, 20)
@@ -341,7 +341,7 @@ local function run_main_logic()
     if last_ok then
       reaper.ImGui_TextDisabled(ctx, pretty_path(PATH_STATUS or ""))
     else
-      reaper.ImGui_TextColored(ctx, 1,0.3,0.3,1, "status.json nicht gefunden/ungültig")
+      reaper.ImGui_TextColored(ctx, 0xFF4C4CFF, "status.json nicht gefunden/ungültig")
       reaper.ImGui_SameLine(ctx, 0, 10)
       if reaper.ImGui_Button(ctx, "Settings…") then show_settings = true end
     end

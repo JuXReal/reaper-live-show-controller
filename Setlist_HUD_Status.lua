@@ -70,7 +70,7 @@ local function parse_fields(s)
   if n_name ~= "" then
     n_name = n_name:gsub('\u002C', ','):gsub('\r','
 '):gsub('\n','
-'):gsub('\t','	'):gsub('\"','"'):gsub('\\','\')
+'):gsub('\t','	'):gsub('\"', '"'):gsub('\\','\')
   end
   
   local c_flag = s:match('%"continue_flag"%s*:%s*(true)') ~= nil

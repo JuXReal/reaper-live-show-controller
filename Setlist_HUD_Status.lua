@@ -68,9 +68,7 @@ local function parse_fields(s)
   
   local n_name = s:match('%"next_region_name"%s*:%s*%"([^%"]*)%"') or ""
   if n_name ~= "" then
-    n_name = n_name:gsub('\u002C', ','):gsub('\r','
-'):gsub('\n','
-'):gsub('\t','	'):gsub('\"', '"'):gsub('\\','\')
+    n_name = n_name:gsub('\\u002C', ','):gsub('\\r','\r'):gsub('\\n','\n'):gsub('\\t','\t'):gsub('\\"', '"'):gsub('\\\\','\\')
   end
   
   local c_flag = s:match('%"continue_flag"%s*:%s*(true)') ~= nil

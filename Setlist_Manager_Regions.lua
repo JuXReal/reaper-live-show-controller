@@ -646,20 +646,9 @@ local function handle_remote()
     fullscreen = not fullscreen
     mark_settings_dirty()
     save_settings(true)
-  else play_entry(setlist.entries[current]) end
-  elseif cmd == "next" then
-    next_song(mode=="SHOW")
-  elseif cmd == "prev" then
-    prev_song(false)
-  elseif cmd == "stop" then
-    stop_play()
-  elseif cmd == "fullscreen_toggle" then
-    fullscreen = not fullscreen
-    mark_settings_dirty()
-    save_settings(true)
   else
     local n = cmd:match("^goto:(%d+)$")
-    if n then goto_i(tonumber(n), mode=="SHOW") end
+    if n then goto_i(tonumber(n), is_playing) end
   end
   reaper.DeleteExtState(REMOTE_KEY, "cmd", true)
 end

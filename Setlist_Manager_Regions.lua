@@ -1317,4 +1317,9 @@ show_warning_pending = SHOW_WARNING
 -- NEU: sicherstellen, dass die Edit-Puffer aus den aktuellen Werten gefüllt sind
 INPUT.status_path = PATH_STATUS or (PATH_STATUS_DEFAULT)
 INPUT.dir_set     = DIR_SET or DIR_SET_DEFAULT
-INPUT.set_name    = setlist.name or
+INPUT.set_name    = setlist.name or "My Set"
+settings_needs_apply = false
+
+reaper.defer(main)
+
+

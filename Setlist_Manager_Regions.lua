@@ -498,7 +498,7 @@ local function play_entry(e)
   if pos > r.start and pos < (r.fin - TIME_EPS) then
     if not playing then reaper.OnPlayButton() end
   else
-    reaper.SetEditCurPos(r.start, true, false)
+    reaper.SetEditCurPos(r.start, true, true)
     if not playing then reaper.OnPlayButton() end
   end
   is_playing = true
@@ -522,21 +522,21 @@ local function goto_i(i, autoplay)
   if autoplay then play_entry(setlist.entries[current]) else cue_entry(setlist.entries[current]) end
 end
 
-local function next_song() 
+local function next_song(force_play) 
   if #setlist.entries>0 then 
     if current < #setlist.entries then
-      goto_i(current+1, is_playing)
+      goto_i(current+1, force_play or is_playing)
     else
       if is_playing then stop_play() end
     end
   end 
 end
-local function prev_song() 
+local function prev_song(force_play) 
   if #setlist.entries>0 then 
     if current > 1 then
-      goto_i(current-1, is_playing)
+      goto_i(current-1, force_play or is_playing)
     else
-      goto_i(1, is_playing)
+      goto_i(1, force_play or is_playing)
     end
   end 
 end
@@ -1317,9 +1317,4 @@ show_warning_pending = SHOW_WARNING
 -- NEU: sicherstellen, dass die Edit-Puffer aus den aktuellen Werten gefüllt sind
 INPUT.status_path = PATH_STATUS or (PATH_STATUS_DEFAULT)
 INPUT.dir_set     = DIR_SET or DIR_SET_DEFAULT
-INPUT.set_name    = setlist.name or "My Set"
-settings_needs_apply = false
-
-reaper.defer(main)
-
-
+INPUT.set_name    = setlist.name or

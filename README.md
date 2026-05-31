@@ -27,6 +27,7 @@ Zusätzliches, separates HUD:
   - Regions scannen, Songs hinzufügen, umsortieren, entfernen
   - Setlists als `*.reaplaylist.txt` speichern & laden
   - *Repair by name*: fehlende Region-IDs anhand der Namen wiederherstellen
+- **Loop-Funktion (pro Song/Region)**: Wiederholt einen Song nahtlos im Loop. Durch erneutes Drücken von Play/Space oder MIDI-Play/PlayToggle wird der Loop verlassen und direkt zum nächsten Song gesprungen.
 - **Show-Modus**
   - Große, gut lesbare Ansicht; Windowed/Vollbild
   - Steuerbuttons: *Prev* / *Play* / *Stop* / *Next* mit Resume-Fähigkeit
@@ -125,6 +126,23 @@ Zusätzliches, separates HUD:
 
 ---
 
+## MIDI & Remote Control
+
+Zur Fernsteuerung des Setlist Managers über MIDI-Controller, Fußschalter oder Streamdeck liegen dem Paket kleine Helfer-Skripte bei:
+- `Setlist_Remote_PlayToggle.lua`
+- `Setlist_Remote_Stop.lua`
+- `Setlist_Remote_Next.lua`
+- `Setlist_Remote_Prev.lua`
+
+**Einrichtung:**
+1. Lade diese Remote-Skripte in die REAPER Action List (`Actions -> Show action list -> New action -> Load ReaScript`).
+2. Wähle das gewünschte Skript (z.B. `Setlist_Remote_Next.lua`) in der Action List aus.
+3. Klicke unten links bei "Shortcuts for selected action" auf **Add...**
+4. Drücke die gewünschte MIDI-Taste oder den Fußschalter, um den Befehl zuzuweisen.
+*(Hinweis: Das Hauptscript muss im Hintergrund laufen, damit die Befehle verarbeitet werden.)*
+
+---
+
 ## Tipps für Live
 
 - **Smooth Seeking** aktivieren: `Options → Smooth seek (on bar/beat change)`  
@@ -145,6 +163,9 @@ Zusätzliches, separates HUD:
 ---
 
 ## Changelog
+
+### 2.6
+- **Loop-Funktion**: Neuer "Loop"-Modus pro Song hinzugefügt. Wenn aktiv, wird der Song nahtlos wiederholt. Ein erneuter Klick auf Play (oder Space / MIDI-Play-Befehl) verlässt den Loop und springt direkt zum nächsten Song. Die Loop-Zustände werden in der `.reaplaylist.txt` gespeichert.
 
 ### 2.5
 - **Ausfallsicherheit für Live (Fail-Safes)**: Crash-Schutz (`pcall`) in allen Hauptschleifen, lag-resistentes Region-Skipping und atomare `status.json` Writes.
@@ -202,6 +223,7 @@ Optional separate HUD:
 ## Features
 
 - **Setlist management**: scan regions, add/reorder/remove, save/load `*.reaplaylist.txt`, name-based repair  
+- **Per-song Loop function**: Loops a song seamlessly. Pressing Play/Space or sending MIDI Play/PlayToggle breaks the loop and jumps directly to the next song.
 - **Show Mode**: big display, Windowed/Fullscreen, play controls with precise resume, **read-only** UI  
 - **Cloud-Ready Sync**: Local UI configs per machine, while setlists and status files sync perfectly via Syncthing/Dropbox.
 - **HUD/Clock**: Auto-Fit to window, manual scale, theme-aware, shows path. Features a giant **Fullscreen Mode** (`F`) showing current song, next song and ETA.
@@ -238,6 +260,23 @@ Optional: **SWS Extension**, **JS_ReaScript API**
 
 Space = Play/Stop • N = Next • P = Prev • E = Edit • H = Show • F = Fullscreen (Show) 
 **HUD:** `F` = Fullscreen • `Ctrl` + `+` / `-` (if Auto-Fit is off)
+
+---
+
+## MIDI & Remote Control
+
+To control the Setlist Manager via MIDI controllers, footswitches, or Streamdeck, use the included helper scripts:
+- `Setlist_Remote_PlayToggle.lua`
+- `Setlist_Remote_Stop.lua`
+- `Setlist_Remote_Next.lua`
+- `Setlist_Remote_Prev.lua`
+
+**Setup:**
+1. Load these remote scripts into the REAPER Action List (`Actions -> Show action list -> New action -> Load ReaScript`).
+2. Select the desired script (e.g., `Setlist_Remote_Next.lua`) in the Action List.
+3. Click **Add...** under "Shortcuts for selected action".
+4. Press your desired MIDI key or footswitch to assign it.
+*(Note: The main script must be running to receive these commands.)*
 
 ---
 

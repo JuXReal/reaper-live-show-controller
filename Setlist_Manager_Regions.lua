@@ -457,7 +457,7 @@ local function save_set()
   for _,e in ipairs(setlist.entries) do
     local rr = R(e.region_idx) or R_by_name(e.name)
     local nm_safe = (e.name or (rr and rr.name) or ""):gsub("[\r\n]", " "):gsub(";", ",")
-    t[#t+1] = string.format("%d;%d;%s", e.region_idx or -1, (e.continue~=false) and 1 or 0, nm_safe)
+    t[#t+1] = string.format("%d;%d;%s;%d", e.region_idx or -1, (e.continue~=false) and 1 or 0, nm_safe, e.loop and 1 or 0)
   end
   if writef(path, table.concat(t,"\n")) then refresh_files() end
 end
@@ -470,11 +470,15 @@ local function load_set_by_index(i)
   local entries = {}
   for line in txt:gmatch("[^\r\n]+") do
     if not line:match("^#") and line:find(";") then
-      local a,b,c = line:match("([^;]+);([^;]+);?(.*)")
-      local ridx = tonumber(a or "")
-      local cont = (b=="1" or b=="true")
-      local name = (c and c ~= "") and c or nil
-      if ridx then entries[#entries+1] = {region_idx=ridx, continue=cont, name=name} end
+      local parts = {}
+      for part in (line .. ";"):gmatch("([^;]*);") do
+        parts[#parts+1] = part
+      end
+      local ridx = tonumber(parts[1] or "")
+      local cont = (parts[2] == "1" or parts[2] == "true")
+      local name = (parts[3] and parts[3] ~= "") and parts[3] or nil
+      local loop = (parts[4] == "1" or parts[4] == "true")
+      if ridx then entries[#entries+1] = {region_idx=ridx, continue=cont, name=name, loop=loop} end
     end
   end
   if #entries>0 then setlist = {name=nm, entries=entries}; current=1 end
@@ -555,6 +559,7 @@ local function status_build()
   end
 
   local continue_flag = (e and e.continue ~= false)
+  local loop_flag = (e and e.loop == true)
 
   -- Total / elapsed / remaining
   local total, elapsed = 0, 0
@@ -579,7 +584,7 @@ local function status_build()
     set=setlist.name or "", index=current, total=#setlist.entries,
     playing=playing, paused=paused,
     region_name=r and r.name or "", region_idx=r and r.idx or -1,
-    next_region_name=next_name, continue_flag=continue_flag,
+    next_region_name=next_name, continue_flag=continue_flag, loop_flag=loop_flag,
     status=(playing and "play") or (paused and "pause") or "stop",
     ts=now(),
     playpos = pos,
@@ -611,7 +616,11 @@ local function engine()
       local pos = reaper.GetPlayPosition() or 0
       -- Lag-resistenter Check: Grenzübergang erkannt
       if last_play_pos < (r.fin - TIME_EPS) and pos >= (r.fin - TIME_EPS) and pos <= (r.fin + 2.0) then
-        if e.continue ~= false then
+        if e.loop then
+          -- Nahtloser Loop: Playcursor an den Start der Region zurücksetzen
+          reaper.SetEditCurPos(r.start, true, true)
+          return
+        elseif e.continue ~= false then
           -- Continue EIN: direkt den nächsten Eintrag starten (falls vorhanden)
           if current < #setlist.entries then
             next_song(true)
@@ -657,9 +666,15 @@ local function handle_remote()
   local cmd = reaper.GetExtState(REMOTE_KEY, "cmd")
   if not cmd or cmd == "" then return end
   if cmd == "play_toggle" then
-    if is_playing then stop_play() else play_entry(setlist.entries[current]) end
+    if is_playing then
+      local e = setlist.entries[current]
+      if e and e.loop then next_song(true) else stop_play() end
+    else
+      play_entry(setlist.entries[current])
+    end
   elseif cmd == "play" then
-    play_entry(setlist.entries[current])
+    local e = setlist.entries[current]
+    if is_playing and e and e.loop then next_song(true) else play_entry(e) end
   elseif cmd == "next" then
     next_song()
   elseif cmd == "prev" then
@@ -743,7 +758,10 @@ local function toolbar()
 
     if reaper.ImGui_Button(ctx, "⏮ Prev") then prev_song() end
     reaper.ImGui_SameLine(ctx)
-    if reaper.ImGui_Button(ctx, "▶ Play") then play_entry(setlist.entries[current]) end
+    if reaper.ImGui_Button(ctx, "▶ Play") then
+      local e = setlist.entries[current]
+      if is_playing and e and e.loop then next_song(true) else play_entry(e) end
+    end
     reaper.ImGui_SameLine(ctx)
     if reaper.ImGui_Button(ctx, "⏸ Stop") then stop_play() end
     reaper.ImGui_SameLine(ctx)
@@ -793,7 +811,7 @@ local function panel_edit()
         reaper.ImGui_TableNextColumn(ctx); reaper.ImGui_Text(ctx, string.format("%.1f", dur_min))
         reaper.ImGui_TableNextColumn(ctx)
         if reaper.ImGui_Button(ctx, "Add##"..i) then
-          setlist.entries[#setlist.entries+1] = { region_idx = r.idx, continue = true, name = r.name }
+          setlist.entries[#setlist.entries+1] = { region_idx = r.idx, continue = true, name = r.name, loop = false }
           current = #setlist.entries
         end
       end
@@ -838,11 +856,12 @@ local function panel_edit()
 
     reaper.ImGui_Separator(ctx)
 
-    if reaper.ImGui_BeginTable(ctx, "tbl_setlist", 6,
+    if reaper.ImGui_BeginTable(ctx, "tbl_setlist", 7,
         reaper.ImGui_TableFlags_RowBg() | reaper.ImGui_TableFlags_Resizable()) then
       reaper.ImGui_TableSetupColumn(ctx, "#",     reaper.ImGui_TableColumnFlags_WidthFixed(), 28)
       reaper.ImGui_TableSetupColumn(ctx, "Song")
       reaper.ImGui_TableSetupColumn(ctx, "Continue", reaper.ImGui_TableColumnFlags_WidthFixed(), 90)
+      reaper.ImGui_TableSetupColumn(ctx, "Loop",     reaper.ImGui_TableColumnFlags_WidthFixed(), 60)
       reaper.ImGui_TableSetupColumn(ctx, "Up",       reaper.ImGui_TableColumnFlags_WidthFixed(), 40)
       reaper.ImGui_TableSetupColumn(ctx, "Down",     reaper.ImGui_TableColumnFlags_WidthFixed(), 50)
       reaper.ImGui_TableSetupColumn(ctx, "Del",      reaper.ImGui_TableColumnFlags_WidthFixed(), 40)
@@ -866,6 +885,11 @@ local function panel_edit()
         local cont = (e.continue ~= false)
         local _, new = reaper.ImGui_Checkbox(ctx, "##cont"..i, cont)
         if new ~= cont then e.continue = new end
+
+        reaper.ImGui_TableNextColumn(ctx)
+        local lp = (e.loop == true)
+        local _, new_lp = reaper.ImGui_Checkbox(ctx, "##loop"..i, lp)
+        if new_lp ~= lp then e.loop = new_lp end
 
         reaper.ImGui_TableNextColumn(ctx)
         if reaper.ImGui_Button(ctx, "▲##"..i) and i > 1 then
@@ -900,7 +924,10 @@ local function panel_show()
 
   if reaper.ImGui_Button(ctx, "⏮ Prev") then prev_song() end
   reaper.ImGui_SameLine(ctx)
-  if reaper.ImGui_Button(ctx, "▶ Play") then play_entry(setlist.entries[current]) end
+  if reaper.ImGui_Button(ctx, "▶ Play") then
+    local e = setlist.entries[current]
+    if is_playing and e and e.loop then next_song(true) else play_entry(e) end
+  end
   reaper.ImGui_SameLine(ctx)
   if reaper.ImGui_Button(ctx, "⏸ Stop") then stop_play() end
   reaper.ImGui_SameLine(ctx)
@@ -913,11 +940,12 @@ local function panel_show()
 
   reaper.ImGui_Separator(ctx)
 
-  if reaper.ImGui_BeginTable(ctx, "tbl_showlist", 6,
+  if reaper.ImGui_BeginTable(ctx, "tbl_showlist", 7,
       reaper.ImGui_TableFlags_RowBg() | reaper.ImGui_TableFlags_Resizable()) then
     reaper.ImGui_TableSetupColumn(ctx, "#",     reaper.ImGui_TableColumnFlags_WidthFixed(), 28)
     reaper.ImGui_TableSetupColumn(ctx, "Song")
     reaper.ImGui_TableSetupColumn(ctx, "Continue", reaper.ImGui_TableColumnFlags_WidthFixed(), 90)
+    reaper.ImGui_TableSetupColumn(ctx, "Loop",     reaper.ImGui_TableColumnFlags_WidthFixed(), 60)
     reaper.ImGui_TableSetupColumn(ctx, "Up",       reaper.ImGui_TableColumnFlags_WidthFixed(), 40)
     reaper.ImGui_TableSetupColumn(ctx, "Down",     reaper.ImGui_TableColumnFlags_WidthFixed(), 50)
     reaper.ImGui_TableSetupColumn(ctx, "Del",      reaper.ImGui_TableColumnFlags_WidthFixed(), 40)
@@ -944,6 +972,11 @@ local function panel_show()
       local cont = (e.continue ~= false)
       local _, new = reaper.ImGui_Checkbox(ctx, "##cont_show"..i, cont)
       if new ~= cont then e.continue = new end
+
+      reaper.ImGui_TableNextColumn(ctx)
+      local lp = (e.loop == true)
+      local _, new_lp = reaper.ImGui_Checkbox(ctx, "##loop_show"..i, lp)
+      if new_lp ~= lp then e.loop = new_lp end
 
       reaper.ImGui_TableNextColumn(ctx)
       if reaper.ImGui_Button(ctx, "▲##show"..i) and i > 1 then
@@ -1073,7 +1106,12 @@ local function hotkeys_in_frame()
   end
 
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Space()) then
-    if is_playing then stop_play() else play_entry(setlist.entries[current]) end
+    if is_playing then
+      local e = setlist.entries[current]
+      if e and e.loop then next_song(true) else stop_play() end
+    else
+      play_entry(setlist.entries[current])
+    end
   end
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_N()) then next_song() end
   if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_P()) then prev_song() end
@@ -1321,5 +1359,3 @@ INPUT.set_name    = setlist.name or "My Set"
 settings_needs_apply = false
 
 reaper.defer(main)
-
-
